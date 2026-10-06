@@ -89,6 +89,7 @@ cd "$BUILD"
 echo "$KSHA_ALGO" | sha256sum -c -
 rm -rf "$BUILD/linux-$KVER"
 tar xf "$KTARBALL"
+mkdir -p "$ROOTFS/build/linux-$KVER"
 mount --bind "$BUILD/linux-$KVER" "$ROOTFS/build/linux-$KVER"
 
 log "4. bootstrap scripts into chroot"
