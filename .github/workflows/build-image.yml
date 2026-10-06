@@ -1,0 +1,105 @@
+name: build-image
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Create a GitHub release with this tag (leave empty to only upload the artifact)"
+        required: false
+        default: ""
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # ubuntu-22.04 ships loop devices, i386 qemu-user binfmt (via qemu-user-static),
+    # parted, debootstrap and the kernel build deps; ~4 cores / 14 GB disk.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+    env:
+      EEEPC_BASE: /mnt/eeepc                 # /mnt has ~70 GB free on the runner
+      KERNEL_VERSION: "6.12.112"
+      EEEPC_IMAGE_SIZE: "7G"
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free up disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          sudo apt-get clean
+          df -h /
+
+      - name: Enable i386 binfmt + loop devices
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            debootstrap debian-archive-keyring qemu-user-static binfmt-support \
+            parted dosfstools e2fsprogs xz-utils rsync ca-certificates \
+            gcc libelf-dev flex bison bc libssl-dev libncurses-dev make kmod cpio
+          sudo modprobe binfmt_misc || true
+          sudo update-binfmts --enable qemu-i386 || true
+          ls /proc/sys/fs/binfmt_misc/ | head
+          sudo losetup -f
+          sudo mkdir -p /mnt/eeepc
+
+      - name: Build the image from source
+        run: sudo -E bash ci/build.sh
+        env:
+          EEEPC_BASE: /mnt/eeepc
+          KERNEL_VERSION: "6.12.112"
+          EEEPC_IMAGE_SIZE: "7G"
+
+      - name: Verify image (partition table, GRUB, kernel config)
+        run: |
+          set -e
+          IMG=/mnt/eeepc/eeepc701-linux.img
+          sudo parted -s "$IMG" print
+          # mount and assert the non-PAE kernel config is inside
+          LOOP=$(sudo losetup --show -fP "$IMG")
+          sudo mkdir -p /mnt/verify
+          sudo mount "${LOOP}p1" /mnt/verify
+          ls /mnt/verify/boot/
+          KREL=$(ls /mnt/verify/boot/vmlinuz-* | head -1 | sed 's/.*vmlinuz-//')
+          echo "KREL=$KREL"
+          grep -E '^CONFIG_(X86_PAE|HIGHMEM4G|MPENTIUMM|DRM_I915|ATH5K|ATL2|USB_STORAGE|ATA_PIIX|ZRAM)=' /mnt/verify/boot/config-$KREL | sort -u
+          ! grep -q '^CONFIG_X86_PAE=y' /mnt/verify/boot/config-$KREL
+          grep -q '^CONFIG_HIGHMEM4G=y' /mnt/verify/boot/config-$KREL
+          test -f /mnt/verify/boot/grub/grub.cfg
+          sudo umount /mnt/verify
+          sudo losetup -d "$LOOP"
+          sudo sha256sum -c /mnt/eeepc/eeepc701-linux.img.xz.sha256
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: eeepc701-linux-image
+          path: |
+            /mnt/eeepc/eeepc701-linux.img.xz
+            /mnt/eeepc/eeepc701-linux.img.xz.sha256
+          compression-level: 0          # already xz-compressed
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Publish release (tagged builds)
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag != '' && inputs.release_tag || github.ref_name }}
+        run: |
+          set -e
+          SHA=$(cat /mnt/eeepc/eeepc701-linux.img.xz.sha256 | awk '{print $1}')
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "deeebian $TAG — EeePC 701 Linux image" \
+            --notes "Built from source in CI (kernel ${KERNEL_VERSION}). sha256 \`$SHA\`" \
+            /mnt/eeepc/eeepc701-linux.img.xz \
+            /mnt/eeepc/eeepc701-linux.img.xz.sha256 \
+            || gh release upload "$TAG" \
+              /mnt/eeepc/eeepc701-linux.img.xz \
+              /mnt/eeepc/eeepc701-linux.img.xz.sha256 --clobber
