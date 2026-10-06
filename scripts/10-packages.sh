@@ -56,5 +56,10 @@ apt-get install -y \
   acpi acpid intel-microcode \
   systemd-timesyncd
 
+# Kernel build toolchain — needed in the chroot to compile 20-kernel.sh, removed later by 90-cleanup.sh
+apt-get install -y --no-install-recommends \
+  build-essential gcc make binutils libc6-dev \
+  bison flex libelf-dev libssl-dev libncurses-dev bc dwarves kmod cpio
+
 echo "=== packages done ==="
 apt-get clean
