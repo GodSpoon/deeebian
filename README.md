@@ -113,7 +113,8 @@ debootstrap i386 → compile the 6.12 LTS non-PAE kernel inside the chroot → c
 assemble the 7 GiB MBR image with GRUB → `xz` → upload artifact (+ create a release when you push a `v*` tag).
 
 **Actions → build-image → Run workflow** (leave the tag empty for artifact-only, or set one to publish a release).
-Expect a long run — the i386 userland runs under `qemu-user` emulation, so budget 2-4 hours.
+Expect roughly 25-45 minutes: i386 code runs natively on the x86-64 runner (no CPU emulation), so it is
+mostly the kernel `bzImage` compile plus the `xz` of the 7 GiB image.
 
 Push a tag to publish automatically:
 
