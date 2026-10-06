@@ -13,6 +13,8 @@ IMG=$BASE/eeepc701-linux.img
 KREL=$(ls -1 $ROOTFS/boot/vmlinuz-* | head -1 | sed 's/.*vmlinuz-//')
 
 echo "kernel release: $KREL"
+[ -d "$ROOTFS" ] || { echo "FATAL: rootfs not found at $ROOTFS"; exit 1; }
+case "$MNT" in "$ROOTFS"*|"$ROOTFS"/*) echo "FATAL: mount point $MNT is inside rootfs $ROOTFS"; exit 1 ;; esac
 
 # --- create image + partition ---
 rm -f "$IMG"

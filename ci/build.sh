@@ -23,6 +23,10 @@ ARCHIVE="https://cdn.kernel.org/pub/linux/kernel/${KDIR}/${KTARBALL}"
 ROOTFS="$BASE/rootfs"
 BUILD="$BASE/build"
 export EEEPC_BASE="$BASE"
+# Image mount point must NOT be inside a path that shadows $ROOTFS (40-image.sh mounts the
+# freshly created image there). Keep it a sibling subdir so rootfs stays visible.
+export EEEPC_MNT="${EEEPC_MNT:-$BASE/mnt}"
+mkdir -p "$EEEPC_MNT"
 export DEBIAN_FRONTEND=noninteractive
 
 log() { printf '\n=== %s ===\n' "$*"; }
