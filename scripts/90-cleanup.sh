@@ -4,11 +4,15 @@
 set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
+
+# Keep packages apt would otherwise autoremove as "orphans" but the desktop needs
+apt-mark manual x11-xserver-utils >/dev/null 2>&1 || true
+
 apt-get purge -y build-essential g++ gcc-12 gcc cpp cpp-12 make m4 \
   dpkg-dev binutils binutils-i686-linux-gnu libstdc++-12-dev libc6-dev \
   linux-libc-dev libelf-dev libssl-dev flex bison bc libfl-dev libfl2 \
   libncurses-dev libncurses6 2>/dev/null || true
-apt-get autoremove --purge -y
+apt-get autoremove --purge -y || true
 apt-get clean
 
 # Sanitize for cloning: unique IDs and host keys are created on first boot
@@ -20,5 +24,6 @@ rm -rf /var/log/*.gz /var/log/apt/*.gz /tmp/* /var/tmp/*
 find /var/log -type f -exec truncate -s0 {} \; 2>/dev/null || true
 
 echo "=== cleanup done ==="
-df -h / | tail -1
-du -sh / 2>/dev/null | tail -1
+df -h / | tail -1 || true
+du -sh / 2>/dev/null | tail -1 || true
+exit 0
