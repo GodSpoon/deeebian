@@ -51,7 +51,21 @@ if [ ! -e /dev/loop0 ]; then
 fi
 losetup -f >/dev/null && echo "loop devices OK" || { echo "FATAL: no loop device available"; exit 1; }
 
-log "2. debootstrap Debian 12 (bookworm) i386"
+log "2. refresh debian-archive-keyring (base images often ship one too old for bookworm)"
+KRDIR=/usr/share/keyrings
+KRDEB=debian-archive-keyring_2025.1_all.deb
+KRURL="https://deb.debian.org/debian/pool/main/d/debian-archive-keyring/$KRDEB"
+KRSUM=9ea7778e443144ca490668737a8ab22dd3e748bb99e805e22ec055abeb3c7fac
+_tmp=$(mktemp -d)
+curl -fL --retry 3 -o "$_tmp/$KRDEB" "$KRURL"
+echo "$KRSUM  $_tmp/$KRDEB" | sha256sum -c -
+dpkg-deb -x "$_tmp/$KRDEB" "$_tmp/x"
+cp -f "$_tmp"/x/usr/share/keyrings/debian-archive-keyring.gpg "$KRDIR/" 2>/dev/null || true
+cp -f "$_tmp"/x/usr/share/keyrings/debian-archive-removed-keys.gpg "$KRDIR/" 2>/dev/null || true
+rm -rf "$_tmp"
+ls -l "$KRDIR"/debian-archive*.gpg
+
+log "3. debootstrap Debian 12 (bookworm) i386"
 rm -rf "$ROOTFS"
 debootstrap --arch=i386 --variant=buildd --foreign bookworm "$ROOTFS" \
   http://deb.debian.org/debian
