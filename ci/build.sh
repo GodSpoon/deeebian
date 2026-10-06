@@ -14,10 +14,11 @@ set -euo pipefail
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 BASE=${EEEPC_BASE:-/var/lib/vz/eeepc}
 KVER=${KERNEL_VERSION:-6.12.112}
-KMAJOR=${KVER%.*}
+# kernel.org publishes every 6.* release under vN.x/ (e.g. 6.12.112 -> v6.x/)
+KDIR="v${KVER%%.*}.x"
 KTARBALL="linux-${KVER}.tar.xz"
 KSHA_ALGO="164dc9d1f6c93c61a15e1f071c48379b467f2b17c469cce7223471968208ed03  ${KTARBALL}"
-ARCHIVE="https://cdn.kernel.org/pub/linux/kernel/v${KMAJOR}.x/${KTARBALL}"
+ARCHIVE="https://cdn.kernel.org/pub/linux/kernel/${KDIR}/${KTARBALL}"
 
 ROOTFS="$BASE/rootfs"
 BUILD="$BASE/build"
