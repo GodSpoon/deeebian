@@ -33,19 +33,34 @@ for c in ATA ATA_PIIX BLK_DEV_SD SCSI \
         -e "s/^CONFIG_${c}=m/CONFIG_${c}=y/" .config
 done
 
+# --- two-pass kconfig handling for the media / V4L2 chain ---------------------
+# kconfig OMITS the children of a disabled symbol from .config entirely, so when
+# MEDIA_SUPPORT is "not set" there is no "# CONFIG_USB_VIDEO_CLASS is not set" line for a
+# sed to match and the whole webcam stack silently fails to be built in. Enable the parents
+# first, run olddefconfig so the children appear, then enable the children. (Verified: this
+# is exactly what tripped the uvcvideo assert on the first CI run.)
+for p in MEDIA_SUPPORT MEDIA_USB_SUPPORT MEDIA_CAMERA_SUPPORT MEDIA_SUPPORT_FILTERS; do
+  sed -i -e "s/^# CONFIG_${p} is not set/CONFIG_${p}=y/" -e "s/^CONFIG_${p}=m/CONFIG_${p}=y/" .config
+done
+make olddefconfig
+# now the V4L2 / uvcvideo symbols exist and can be forced built-in
+for c in VIDEO_DEV VIDEO_V4L2 V4L2_FWNODE V4L2_ASYNC \
+         VIDEOBUF2_CORE VIDEOBUF2_VMALLOC MEDIA_USB_SUPPORT USB_VIDEO_CLASS; do
+  sed -i -e "s/^# CONFIG_${c} is not set/CONFIG_${c}=y/" -e "s/^CONFIG_${c}=m/CONFIG_${c}=y/" .config
+done
+
 # i915 is built in with no fbdev emulation, so nothing re-registers a console once DRM
 # takes the display: you lose the text console and every virtual terminal (Ctrl+Alt+F1..F6).
 # DRM_FBDEV_EMULATION gives the DRM framebuffer console; VGA_CONSOLE is kept as the early path.
 sed -i -e 's/^# CONFIG_DRM_FBDEV_EMULATION is not set/CONFIG_DRM_FBDEV_EMULATION=y/' .config
-# UVCVIDEO is a tristate under MEDIA_SUPPORT, not a menuconfig bool
-sed -i -e 's/^# CONFIG_USB_VIDEO_CLASS is not set/CONFIG_USB_VIDEO_CLASS=y/' \
-       -e 's/^CONFIG_USB_VIDEO_CLASS=m/CONFIG_USB_VIDEO_CLASS=y/' .config
 
 # A 900 MHz Celeron M does not need a 1000 Hz tick; i386_defconfig defaults to HZ=1000.
 # 250 Hz is the standard netbook choice (battery, fewer wakeups, negligible latency cost).
-sed -i -e 's/^CONFIG_HZ_1000=y/CONFIG_HZ_250=y/' \
-       -e 's/^CONFIG_HZ=1000/CONFIG_HZ=250/' \
-       -e 's/^# CONFIG_HZ_250 is not set/CONFIG_HZ_250=y/' .config
+# NB: the generic loop above cannot set HZ_250 — "CONFIG_HZ_250" does not match the
+# "# CONFIG_HZ_250 is not set" line, because sed's leading '# ' is literal.
+sed -i -e 's/^CONFIG_HZ_1000=y/# CONFIG_HZ_1000 is not set/' \
+       -e 's/^# CONFIG_HZ_250 is not set/CONFIG_HZ_250=y/' \
+       -e 's/^CONFIG_HZ=1000/CONFIG_HZ=250/' .config
 
 # Keep debug noise off
 sed -i -e 's/^CONFIG_DEBUG_INFO=y/# CONFIG_DEBUG_INFO is not set/' \
