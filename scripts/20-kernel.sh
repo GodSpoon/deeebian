@@ -34,6 +34,7 @@ WANT="ATA ATA_PIIX BLK_DEV_SD SCSI \
       MEDIA_SUPPORT MEDIA_USB_SUPPORT MEDIA_CAMERA_SUPPORT MEDIA_SUPPORT_FILTERS \
       VIDEO_DEV V4L2_FWNODE V4L2_ASYNC VIDEOBUF2_CORE VIDEOBUF2_VMALLOC USB_VIDEO_CLASS \
       ZSMALLOC ZRAM CRYPTO_LZ4 \
+      HWMON THERMAL ACPI_THERMAL \
       FB FB_CORE FB_VESA FRAMEBUFFER_CONSOLE VT VT_CONSOLE INPUT \
       SERIAL_8250 SERIAL_8250_CONSOLE \
       EXT4_FS VFAT_FS NLS_CODEPAGE_437 NLS_ISO8859_1 \
@@ -72,6 +73,15 @@ make olddefconfig
 # --- hard assertions ---
 grep -q '^CONFIG_X86_PAE=y' .config && { echo "FATAL: PAE enabled"; exit 1; }
 grep -q '^CONFIG_HIGHMEM4G=y' .config || { echo "FATAL: HIGHMEM4G missing"; exit 1; }
+# Thermal + hwmon: in the pinned 6.12.112 tree these are already =y in the generated
+# .config — HWMON via 'default y', THERMAL via ACPI_PROCESSOR/ACPI_VIDEO 'select THERMAL',
+# and ACPI_THERMAL via 'default y'. They are named explicitly in WANT and asserted here so
+# that a future defconfig/default change cannot silently drop the ACPI thermal zone and the
+# eeepc fan hwmon (which eeepc-thermals and the fan policy depend on). Verified empirically
+# against linux-6.12.112: all three are =y in the stock config.
+grep -q '^CONFIG_HWMON=y' .config || { echo "FATAL: HWMON missing (no fan1_input/pwm1 for the eeepc fan)"; exit 1; }
+grep -q '^CONFIG_THERMAL=y' .config || { echo "FATAL: THERMAL missing (no /sys/class/thermal for eeepc-thermals)"; exit 1; }
+grep -q '^CONFIG_ACPI_THERMAL=y' .config || { echo "FATAL: ACPI_THERMAL missing (no ACPI thermal zone)"; exit 1; }
 grep -q '^CONFIG_DRM_I915=y' .config || { echo "FATAL: i915 not built-in"; exit 1; }
 grep -q '^CONFIG_ATH5K=y' .config || { echo "FATAL: ath5k not built-in"; exit 1; }
 # The console and the webcam are asserted because the docs/README advertise both. Without
@@ -89,7 +99,7 @@ grep -q '^CONFIG_RTW88_8821CU=y' .config || { echo "FATAL: rtw88 8821cu (USB wif
 grep -q '^CONFIG_IWLWIFI=y' .config || { echo "FATAL: iwlwifi not built-in"; exit 1; }
 grep -q '^CONFIG_IWLDVM=y' .config || { echo "FATAL: iwldvm (Intel 6250 DVM support) not built-in"; exit 1; }
 grep -q '^CONFIG_HZ_1000=y' .config && { echo "FATAL: HZ=1000 on a 900 MHz netbook"; exit 1; }
-echo "CONFIG checks passed:"; grep -E 'CONFIG_(X86_PAE|HIGHMEM4G|MPENTIUMM|DRM_I915|ATH5K|RTW88_8821CU|IWLWIFI|IWLDVM|ATL2|USB_STORAGE|ATA_PIIX|FRAMEBUFFER_CONSOLE|DRM_FBDEV_EMULATION|MEDIA_SUPPORT|USB_VIDEO_CLASS|HZ)=' .config | sort -u
+echo "CONFIG checks passed:"; grep -E 'CONFIG_(X86_PAE|HIGHMEM4G|MPENTIUMM|DRM_I915|ATH5K|RTW88_8821CU|IWLWIFI|IWLDVM|ATL2|USB_STORAGE|ATA_PIIX|FRAMEBUFFER_CONSOLE|DRM_FBDEV_EMULATION|MEDIA_SUPPORT|USB_VIDEO_CLASS|HWMON|THERMAL|ACPI_THERMAL|HZ)=' .config | sort -u
 
 make -j"$(nproc)" LOCALVERSION=-eeepc bzImage modules
 

@@ -74,6 +74,7 @@ for the one-time boot menu and pick the card. First boot grows the root filesyst
 | Browser | **Super+F** (Firefox ESR; Netsurf installed for light pages) |
 | Wifi | click the **nm-applet** icon in the panel |
 | Report a problem | `sudo deeebian-report.sh --note "what is wrong"` — writes a diagnostics tarball |
+| Games & toys | `eeepc-games` — install curated games/tools/toys (menu); see [`docs/games-and-software.md`](docs/games-and-software.md) |
 | SSH | `ssh sam@eeepc701.local` |
 | Update | `sudo apt update && sudo apt upgrade` |
 | Battery status | `battery-rejuv status` |
@@ -198,7 +199,7 @@ debug harnesses used to verify the boot path.
 scripts/     build pipeline (see table above)
 ci/build.sh  one-shot end-to-end builder (used by CI and locally)
 .github/     Actions workflow
-docs/        build report page (index.html + report.html)
+docs/        build report page (index.html + report.html); games-and-software.md = the curated catalogue
 testshots/   VM screendumps from verification
 ```
 

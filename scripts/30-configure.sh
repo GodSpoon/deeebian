@@ -59,7 +59,31 @@ WantedBy=multi-user.target
 EOF
 systemctl enable zram-swap.service
 cat > /etc/sysctl.d/50-eeepc.conf <<'EOF'
+# vm.swappiness=150 is deliberately > 100. Since Linux 3.x, swappiness above 100 tells the
+# kernel how much to prefer anonymous (page-cache-evictable) memory over the page cache.
+# With zram swap this is exactly what we want: zram pages compress ~3-4:1 (lz4), so swapping
+# anon pages out costs a few hundred microseconds of CPU, while evicting a clean page-cache
+# page costs a 1-10 ms re-read from the SD card. We would rather spend idle CPU than SD I/O,
+# and the card is the bottleneck (and wears out). Keep 150; do NOT "fix" it to 10 as generic
+# netbook advice suggests.
 vm.swappiness=150
+
+# Do not leave dirty pages in RAM to be flushed in one big burst later. On an SD card a
+# smaller, earlier flush is far kinder than a large delayed one (less I/O stall, less
+# write amplification). 8 MB is comfortable for this class of card.
+vm.dirty_ratio=10
+vm.dirty_background_ratio=5
+vm.dirty_expire_centisecs=1500
+vm.dirty_writeback_centisecs=1500
+
+# Inode/dentry cache reclaim: keep the "age it a bit before dropping" default explicitly so
+# a future base-image change cannot silently turn this into drop-everything-at-50%.
+vm.vfs_cache_pressure=100
+
+# Network latency: shorter TCP SYN/keepalive timeouts so a dead wifi network is noticed in
+# seconds, not minutes, on a machine that is often on flaky wifi.
+net.ipv4.tcp_fin_timeout=30
+net.ipv4.tcp_keepalive_time=120
 EOF
 
 # --- wifi radio bring-up (MUST run before NetworkManager) ---
@@ -123,6 +147,94 @@ Nice=19
 IOSchedulingClass=idle
 EOF
 done
+
+# --- ship the new perf/thermals tools from /opt/build (ci/build.sh copies them there) ----
+# Fail loudly, like the deeebian-report.sh guard below: silently shipping without them would
+# remove the only way to see temperatures/fan state or to benchmark the machine.
+install -d -m 0755 /usr/local/sbin /usr/local/bin
+for t in eeepc-thermals.sh eeepc-bench.sh eeepc-io-tune.sh eeepc-acpi-profile.sh; do
+  if [ ! -f "/opt/build/$t" ]; then
+    echo "FATAL: /opt/build/$t missing -- ci/build.sh did not copy the perf/thermals tools" >&2
+    exit 1
+  fi
+done
+
+# --- cpufreq: the 701's Celeron M ULV 353 has NO Enhanced SpeedStep --------------
+# This is a verified finding, not an assumption. The Celeron M (Dothan-core, family 6,
+# model 0x0D) lacks the EST bit in CPUID; the 630 MHz "idle" clock reported by /proc/cpuinfo
+# is a fixed clock-modulation (throttling) state, not a P-state. acpi-cpufreq will probe,
+# find no _PSS objects, and register no policy, so there is nothing to govern. We therefore
+# do NOT install a cpufreq governor unit and we do NOT force 'performance'. If a future
+# stepping does expose cpufreq it will come up with the kernel default (userspace) and
+# userspace can still pick one; we just refuse to pretend we can control it.
+# cpufrequtils is installed only so that /usr/local/bin/eeepc-thermals can *report* the state
+# (cpufreq-info) and so an operator can try it by hand. eeepc-bench records whether a policy
+# exists at all, which is the honest measurement.
+
+# --- ACPI platform profile: prefer passive cooling when the firmware offers it ---------
+# ACPI_PLATFORM_PROFILE (drivers/acpi/platform_profile.c) is present in this kernel and on
+# some 701 BIOSes exposes /sys/firmware/acpi/platform_profile. If it exists we ask for the
+# most power-efficient profile; if the attribute or its 'low-power' choice is absent we do
+# nothing (the shell test guards every write). This is the ONLY firmware cooling knob the
+# 701 reliably gives us on the ACPI side.
+install -m 0755 /opt/build/eeepc-acpi-profile.sh /usr/local/sbin/eeepc-acpi-profile.sh
+cat > /etc/systemd/system/eeepc-acpi-profile.service <<'EOF'
+[Unit]
+Description=Select the firmware low-power ACPI platform profile when available
+After=multi-user.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Nice=19
+IOSchedulingClass=idle
+ExecStart=/usr/local/sbin/eeepc-acpi-profile.sh
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl enable eeepc-acpi-profile.service
+
+# --- SD card: I/O scheduler + no unnecessary read-ahead -------------------------------
+# The 701's only disk is an SD card behind the internal USB reader (sd/mmc). The kernel's
+# default on a 900 MHz i386 build may be mq-deadline or bfq; neither helps when there is no
+# seek cost to optimise. 'none' (noop) removes a scheduling layer on the single core, and a
+# small read_ahead_kb keeps the page cache from reading far ahead on a card whose random
+# latency dwarfs its sequential throughput. Written by a unit (not udev) so it always runs,
+# never races, and needs no udev rules file. Every write is guarded: if the sysfs names
+# differ on a given day nothing fails, we just skip.
+install -m 0755 /opt/build/eeepc-io-tune.sh /usr/local/sbin/eeepc-io-tune.sh
+cat > /etc/systemd/system/eeepc-io-tune.service <<'EOF'
+[Unit]
+Description=Tune SD/USB block devices: no I/O scheduler, modest read-ahead
+After=local-fs.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Nice=19
+IOSchedulingClass=idle
+ExecStart=/usr/local/sbin/eeepc-io-tune.sh
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl enable eeepc-io-tune.service
+
+# --- zram: use lz4 but also verify it is in use; keep the sizing policy ----------------
+# The unit above is unchanged (sized to MemTotal, capped at 1 GiB, lz4). We only add a
+# second-line safety net: if lz4 is not available the kernel falls back, and if the size
+# came out 0 the swap is useless. eeepc-health already flags missing zram; eeepc-bench
+# records the real compressed/uncompressed ratio so the policy can be judged on data.
+
+# --- earlyoom tuning: on a 2 GB machine, act earlier and protect the session -----------
+# A 2 GB 701 running Firefox + Openbox thrashes long before the stock 10% threshold. earlyoom
+# kills the biggest offending process to keep the desktop alive. -m 8 (act at 8% available)
+# and -s 5 (act at 5% free swap) make it step in while the GUI is still usable. The --avoid
+# regex protects the session's own daemons (dbus, systemd, X, the session) so earlyoom cannot
+# take down the desktop it is trying to save, and --prefer targets the usual memory hogs.
+# -r 3600 keeps its own log line to once an hour (it logs to the in-RAM journal).
+# /etc/default/earlyoom is sourced by the unit's EnvironmentFile; it is an upstream feature.
+cat > /etc/default/earlyoom <<'EOF'
+# Eee PC 701: be proactive on a 2 GB RAM machine and never kill the session itself.
+EARLYOOM_ARGS="-r 3600 -m 8 -s 5 --avoid '(^|/)(systemd|dbus-daemon|X|Xorg|lightdm|openbox|pcmanfm|tint2|sshd)$' --prefer '(^|/)(firefox|firefox-esr|Web Content|netsurf)$'"
+EOF
 
 # --- Eee PC platform module (hotkeys, fan) ---
 echo "eeepc-laptop" > /etc/modules-load.d/eeepc.conf
@@ -280,6 +392,28 @@ Terminal=false
 Categories=System;Monitor;
 EOF
 
+# --- games / tools / toys installer ------------------------------------------
+# The curated catalogue lives in docs/games-and-software.md; the installer is
+# shipped so a fresh box has a discoverable way to add games (no apt knowledge
+# needed, works offline from a .deb dir, idempotent).  Copy it in, and register
+# a launcher in the panel (see tint2rc below), the Openbox menu (see menu.xml
+# pipe-menu entry) and as a Desktop icon.
+if [ ! -f /opt/build/eeepc-games.sh ]; then
+  echo "WARN: /opt/build/eeepc-games.sh missing -- games installer not shipped" >&2
+else
+  install -m 0755 /opt/build/eeepc-games.sh /usr/local/bin/eeepc-games
+fi
+cat > /usr/local/share/applications/eeepc-games.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Games & software
+Comment=Install curated games, tools & toys (Debian packages; works offline)
+Exec=lxterminal -e /usr/local/bin/eeepc-games
+Icon=applications-games
+Terminal=false
+Categories=Game;Utility;
+EOF
+
 # --- openbox session for sam: panel, applets, keybinds ---
 mkdir -p /home/sam/.config/openbox
 # autostart: give the desktop a background and, crucially, a NO-KEYBIND way to reach a
@@ -327,6 +461,7 @@ launcher_padding = 4 2 4
 launcher_background_id = 0
 launcher_icon_size = 20
 launcher_item_app = /usr/local/share/applications/eeepc-sysinfo.desktop
+launcher_item_app = /usr/local/share/applications/eeepc-games.desktop
 launcher_item_app = /usr/share/applications/lxterminal.desktop
 launcher_item_app = /usr/share/applications/firefox-esr.desktop
 launcher_item_app = /usr/share/applications/pcmanfm.desktop
@@ -384,10 +519,17 @@ cat > /home/sam/.config/openbox/menu.xml <<'EOF'
     <item label="Terminal"><action name="Execute"><execute>lxterminal</execute></action></item>
     <item label="System info (IP address, disk, memory)"><action name="Execute"><execute>lxterminal -e eeepc-sysinfo</execute></action></item>
     <item label="Health check (PASS/FAIL summary)"><action name="Execute"><execute>lxterminal -e /usr/local/bin/eeepc-health-tui</execute></action></item>
+    <item label="Thermals (temps, fan, CPU freq)"><action name="Execute"><execute>lxterminal -e /usr/local/bin/eeepc-thermals-tui</execute></action></item>
+    <item label="Benchmark (quick)"><action name="Execute"><execute>lxterminal -e /usr/local/bin/eeepc-bench-tui</execute></action></item>
     <item label="Web browser (Firefox)"><action name="Execute"><execute>firefox-esr</execute></action></item>
     <item label="Light browser (Netsurf)"><action name="Execute"><execute>netsurf</execute></action></item>
     <item label="Files"><action name="Execute"><execute>pcmanfm</execute></action></item>
     <item label="Text editor"><action name="Execute"><execute>mousepad</execute></action></item>
+    <!-- Dynamic submenu: the command prints Openbox pipe-menu XML listing the
+         games/tools that are actually installed, plus a launcher for the
+         installer itself.  So newly installed games appear here with no hand
+         editing of this file. -->
+    <menu id="games-menu" label="Games &amp; software" execute="/usr/local/bin/eeepc-games --openbox-pipe"/>
     <separator/>
     <item label="Network connections"><action name="Execute"><execute>nm-connection-editor</execute></action></item>
     <item label="Volume control"><action name="Execute"><execute>lxterminal -e alsamixer</execute></action></item>
@@ -420,6 +562,8 @@ cat > /home/sam/.config/openbox/rc.xml <<'EOF'
     <keybind key="C-A-x"><action name="Execute"><execute>lxterminal</execute></action></keybind>
     <keybind key="C-A-h"><action name="Execute"><execute>lxterminal -e /usr/local/bin/eeepc-health-tui</execute></action></keybind>
     <keybind key="C-A-s"><action name="Execute"><execute>lxterminal -e eeepc-sysinfo</execute></action></keybind>
+    <keybind key="C-A-e"><action name="Execute"><execute>lxterminal -e /usr/local/bin/eeepc-thermals-tui</execute></action></keybind>
+    <keybind key="C-A-b"><action name="Execute"><execute>lxterminal -e /usr/local/bin/eeepc-bench-tui</execute></action></keybind>
     <!-- no Super key on the 701: fallback binds for an external keyboard only -->
     <keybind key="W-Return"><action name="Execute"><execute>lxterminal</execute></action></keybind>
     <keybind key="W-F"><action name="Execute"><execute>firefox-esr</execute></action></keybind>
@@ -474,6 +618,17 @@ Exec=lxterminal -e eeepc-sysinfo
 Icon=utilities-system-monitor
 Terminal=false
 Categories=System;Monitor;
+EOF
+cat > /home/sam/Desktop/eeepc-games.desktop <<'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Games & software
+Comment=Curated games, tools and toys for the Eee PC 701
+Exec=lxterminal -e /usr/local/bin/eeepc-games
+Icon=applications-games
+Terminal=false
+Categories=Game;Utility;
 EOF
 chmod 0755 /home/sam/Desktop/*.desktop
 
@@ -705,6 +860,36 @@ read -r -p "Press Enter to close this window... "
 TUI
 chmod +x /usr/local/bin/eeepc-health-tui
 
+# --- thermals / fan / CPU-state reporter: eeepc-thermals -----------------------------
+# Installed from /opt/build/eeepc-thermals.sh. It is READ-ONLY by design: the 701's fan is an
+# Embedded-Controller curve exposed via the `eeepc` hwmon (pwm1/pwm1_enable/fan1_input), and
+# `cpufv` is force-disabled by the driver on model "701". Neither is written for the user.
+# See the script header for the full interface note and docs/performance-thermals.md §1.
+install -m 0755 /opt/build/eeepc-thermals.sh /usr/local/bin/eeepc-thermals
+
+# --- benchmark: eeepc-bench -----------------------------------------------------------
+# Installed from /opt/build/eeepc-bench.sh. Records boot/CPU/memory/SD-IO/X11 latency to
+# /var/log/eeepc-bench-<date>.txt. --quick skips the only SD-write step. See its header.
+install -m 0755 /opt/build/eeepc-bench.sh /usr/local/bin/eeepc-bench
+
+# terminal wrappers so the Openbox menu can keep the output on screen (menu items must
+# not vanish when the command exits). Same pattern as eeepc-health-tui.
+cat > /usr/local/bin/eeepc-thermals-tui <<'TUI'
+#!/bin/bash
+/usr/local/bin/eeepc-thermals "$@"
+echo
+read -r -p "Press Enter to close this window... "
+TUI
+chmod 0755 /usr/local/bin/eeepc-thermals-tui
+cat > /usr/local/bin/eeepc-bench-tui <<'TUI'
+#!/bin/bash
+# --quick by default from the menu: no SD write test on a casual click.
+/usr/local/bin/eeepc-bench --quick "$@"
+echo
+read -r -p "Press Enter to close this window... "
+TUI
+chmod 0755 /usr/local/bin/eeepc-bench-tui
+
 # --- PATH so rfkill / iw / swapon / ss resolve for sam ------------------------
 # sam's login PATH is /usr/local/bin:/usr/bin:/bin:/usr/games -- /usr/sbin is absent,
 # so `rfkill` fails ("command not found") even though /usr/sbin/rfkill exists.
@@ -853,11 +1038,16 @@ cat > /etc/motd <<'EOF'
   Network:  ip -4 addr      — wifi: click the nm-applet icon in the panel
   Health:   Ctrl+Alt+S, or the "System info" icon — IP, disk, memory, route
             eeepc-health    — one-shot PASS/FAIL check of the whole machine
+  Perf:     eeepc-thermals  — temps, fan state, CPU freq, governor (--watch 5)
+            eeepc-bench --quick --label "before"  — benchmarks boot/CPU/disk/X11
+            (writes /var/log/eeepc-bench-<date>.txt; --quick skips the SD write test)
   Support:  sudo deeebian-report.sh --note "describe the problem"
             — writes a diagnostics tarball and tries to send it to Hermes
-  Panel has launcher icons too (Terminal / System info / Firefox / Files).
+  Panel has launcher icons too (Terminal / System info / Games / Firefox / Files).
   Battery: `battery-rejuv status` to read the pack; `sudo battery-rejuv full` to
            recalibrate the fuel gauge (full drain, then full charge — a few hours).
+  Games:    eeepc-games   — install curated games, tools & toys (menu-driven)
+            Also right-click the desktop > "Games & software".
   Runs from SD; swap is zram (RAM-backed, no card wear). Prefer a <=32 GB SDHC.
 
 EOF

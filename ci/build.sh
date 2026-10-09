@@ -102,6 +102,9 @@ cp "$REPO_ROOT"/scripts/10-packages.sh "$REPO_ROOT"/scripts/20-kernel.sh \
    "$REPO_ROOT"/scripts/30-configure.sh "$REPO_ROOT"/scripts/90-cleanup.sh \
    "$REPO_ROOT"/scripts/deeebian-report.sh "$REPO_ROOT"/scripts/wallpaper.py \
    "$REPO_ROOT"/scripts/battery-rejuv.sh \
+   "$REPO_ROOT"/scripts/eeepc-thermals.sh "$REPO_ROOT"/scripts/eeepc-bench.sh \
+   "$REPO_ROOT"/scripts/eeepc-io-tune.sh "$REPO_ROOT"/scripts/eeepc-acpi-profile.sh \
+   "$REPO_ROOT"/scripts/eeepc-games.sh \
    "$ROOTFS/opt/build/"
 chmod +x "$ROOTFS"/opt/build/*.sh
 

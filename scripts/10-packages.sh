@@ -49,6 +49,7 @@ apt-get install -y \
   curl wget rsync tmux htop ncdu less file nano pciutils usbutils \
   alsa-utils volumeicon-alsa \
   earlyoom tlp \
+  cpufrequtils hdparm \
   cloud-guest-utils e2fsprogs dosfstools ntfs-3g exfatprogs \
   xserver-xorg-core xserver-xorg xserver-xorg-video-intel \
   xserver-xorg-video-fbdev xserver-xorg-video-vesa xserver-xorg-input-libinput \
