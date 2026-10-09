@@ -1048,7 +1048,7 @@ cat > /etc/motd <<'EOF'
            recalibrate the fuel gauge (full drain, then full charge — a few hours).
   Games:    eeepc-games   — install curated games, tools & toys (menu-driven)
             Also right-click the desktop > "Games & software".
-  Runs from SD; swap is zram (RAM-backed, no card wear). Prefer a <=32 GB SDHC.
+  Runs from SD; swap is zram (RAM-backed, no card wear). 16 GB+ recommended.
 
 EOF
 

@@ -18,12 +18,13 @@ swap, so the card is never written for paging — fast and gentle on the card.
 
 ## Put it on an SD card
 
-> **Card note: 32 GB SDHC is the safe choice.** Some Eee PC 701 units are reported not to
-> recognise SDXC cards (>32 GB) in the internal reader, though this is card- and unit-dependent
-> rather than a hard limit — any SDXC-capable host should read SD/SDHC, so a large card may well
-> work. If a big card isn't seen by the BIOS, try an SDHC card. Known 701 reader quirks are the
-> "high voltage" mode some cards need and the BIOS `OS Installation` setting if you hit write
-> errors. A 32 GB SDHC is the known-good default.
+> **Card note: SDXC works.** This was originally believed to be an SD/SDHC-only reader and the
+> docs said to stay at <=32 GB. That is **wrong**: this image has been booted on real hardware
+> from a **128 GB SDXC** card in the 701's own internal reader, and the kernel enumerates it as a
+> plain USB mass-storage device with no capacity limit (`244277248` 512-byte sectors ≈ 116 GiB).
+> Use any card you have; 16 GB or more is comfortable, and the first boot grows the root
+> filesystem to fill whatever you insert. (If a particular card is *not* seen by the BIOS, that is
+> a card/media quirk, not a capacity limit — try another card.)
 
 Get the image from the [Releases page](../../releases), then write it to the card.
 
@@ -130,7 +131,7 @@ exercises the drain/charge state machines against a fake `power_supply` tree.
 | Atheros AR5007EG wifi | ath5k (built-in, no blob) | works |
 | Attansic/Atheros L2 ethernet | atl2 (built-in) | works |
 | Realtek ALC662 audio | snd-hda-intel, auto-unmute on boot | works |
-| Internal SD reader | usb-storage (built-in) | bootable from BIOS, **≤32 GB SDHC only** |
+| Internal SD reader | usb-storage (built-in) | bootable from BIOS; **SD, SDHC and SDXC all verified** (128 GB SDXC boots) |
 | Webcam | uvcvideo (built-in) | works |
 | Fn keys / fan | eeepc-laptop | loaded at boot |
 
