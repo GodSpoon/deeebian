@@ -18,41 +18,39 @@ sed -i -e 's/^CONFIG_M686=y/# CONFIG_M686 is not set/' \
 sed -i -e 's/^CONFIG_X86_PAE=y/# CONFIG_X86_PAE is not set/' \
        -e 's/^# CONFIG_HIGHMEM4G is not set/CONFIG_HIGHMEM4G=y/' .config
 
-# Core drivers + their subsystems built-in (=y): boots with zero initramfs assumptions
-for c in ATA ATA_PIIX BLK_DEV_SD SCSI \
-         USB USB_SUPPORT UHCI_HCD OHCI_HCD EHCI_HCD USB_STORAGE \
-         CFG80211 MAC80211 WIRELESS ATH5K ATL2 \
-         SOUND SND SND_HDA SND_HDA_INTEL SND_HDA_GENERIC SND_HDA_CODEC_GENERIC SND_HDA_CODEC_REALTEK \
-         DRM DRM_I915 EEEPC_LAPTOP \
-         MEDIA_SUPPORT MEDIA_USB_SUPPORT MEDIA_CAMERA_SUPPORT \
-         VIDEO_DEV V4L2_FWNODE VIDEOBUF2_CORE VIDEOBUF2_VMALLOC USB_VIDEO_CLASS \
-         ZSMALLOC ZRAM CRYPTO_LZ4 \
-         FB FB_VESA FRAMEBUFFER_CONSOLE VT INPUT \
-         EXT4_FS VFAT_FS NLS_CODEPAGE_437 NLS_ISO8859_1; do
-  sed -i -e "s/^# CONFIG_${c} is not set/CONFIG_${c}=y/" \
-        -e "s/^CONFIG_${c}=m/CONFIG_${c}=y/" .config
-done
+# --- Force the built-in "=y" driver set, converging through kconfig dependencies ------
+# kconfig OMITS the children of a disabled symbol from .config entirely — with MEDIA_SUPPORT
+# unset there is no "# CONFIG_USB_VIDEO_CLASS is not set" line at all for a sed to match, and
+# VIDEO_DEV is a hidden symbol driven only by its `default`. A single sed pass therefore CANNOT
+# set a dependency chain; that is exactly why the first v1.1.0 run died with
+# "FATAL: uvcvideo (webcam) not built-in", and why FRAMEBUFFER_CONSOLE (depends on FB) failed too.
+# Set what is reachable, let `olddefconfig` materialise the newly-reachable symbols, repeat until
+# the set stops improving, then ASSERT. Bounded at 6 passes; olddefconfig is cheap.
+WANT="ATA ATA_PIIX BLK_DEV_SD SCSI \
+      USB USB_SUPPORT UHCI_HCD OHCI_HCD EHCI_HCD USB_STORAGE \
+      CFG80211 MAC80211 WIRELESS ATH5K ATH5K_PCI ATL2 \
+      SOUND SND SND_HDA SND_HDA_INTEL SND_HDA_GENERIC SND_HDA_CODEC_GENERIC SND_HDA_CODEC_REALTEK \
+      DRM DRM_KMS_HELPER DRM_FBDEV_EMULATION DRM_I915 EEEPC_LAPTOP \
+      MEDIA_SUPPORT MEDIA_USB_SUPPORT MEDIA_CAMERA_SUPPORT MEDIA_SUPPORT_FILTERS \
+      VIDEO_DEV V4L2_FWNODE V4L2_ASYNC VIDEOBUF2_CORE VIDEOBUF2_VMALLOC USB_VIDEO_CLASS \
+      ZSMALLOC ZRAM CRYPTO_LZ4 \
+      FB FB_CORE FB_VESA FRAMEBUFFER_CONSOLE VT VT_CONSOLE INPUT \
+      SERIAL_8250 SERIAL_8250_CONSOLE \
+      EXT4_FS VFAT_FS NLS_CODEPAGE_437 NLS_ISO8859_1"
 
-# --- two-pass kconfig handling for the media / V4L2 chain ---------------------
-# kconfig OMITS the children of a disabled symbol from .config entirely, so when
-# MEDIA_SUPPORT is "not set" there is no "# CONFIG_USB_VIDEO_CLASS is not set" line for a
-# sed to match and the whole webcam stack silently fails to be built in. Enable the parents
-# first, run olddefconfig so the children appear, then enable the children. (Verified: this
-# is exactly what tripped the uvcvideo assert on the first CI run.)
-for p in MEDIA_SUPPORT MEDIA_USB_SUPPORT MEDIA_CAMERA_SUPPORT MEDIA_SUPPORT_FILTERS; do
-  sed -i -e "s/^# CONFIG_${p} is not set/CONFIG_${p}=y/" -e "s/^CONFIG_${p}=m/CONFIG_${p}=y/" .config
+PREV=""
+for pass in 1 2 3 4 5 6; do
+  for c in $WANT; do
+    sed -i -e "s/^# CONFIG_${c} is not set/CONFIG_${c}=y/" \
+           -e "s/^CONFIG_${c}=m/CONFIG_${c}=y/" .config
+  done
+  make olddefconfig >/dev/null 2>&1
+  CUR=$(grep -E "^CONFIG_($(echo $WANT | tr ' ' '|'))=y$" .config | sort | tr '\n' ' ')
+  got=$(echo "$CUR" | wc -w); tot=$(echo $WANT | wc -w)
+  echo "kconfig pass $pass: $got/$tot of the wanted set built in"
+  [ "$CUR" = "$PREV" ] && { echo "kconfig converged at pass $pass"; break; }
+  PREV="$CUR"
 done
-make olddefconfig
-# now the V4L2 / uvcvideo symbols exist and can be forced built-in
-for c in VIDEO_DEV VIDEO_V4L2 V4L2_FWNODE V4L2_ASYNC \
-         VIDEOBUF2_CORE VIDEOBUF2_VMALLOC MEDIA_USB_SUPPORT USB_VIDEO_CLASS; do
-  sed -i -e "s/^# CONFIG_${c} is not set/CONFIG_${c}=y/" -e "s/^CONFIG_${c}=m/CONFIG_${c}=y/" .config
-done
-
-# i915 is built in with no fbdev emulation, so nothing re-registers a console once DRM
-# takes the display: you lose the text console and every virtual terminal (Ctrl+Alt+F1..F6).
-# DRM_FBDEV_EMULATION gives the DRM framebuffer console; VGA_CONSOLE is kept as the early path.
-sed -i -e 's/^# CONFIG_DRM_FBDEV_EMULATION is not set/CONFIG_DRM_FBDEV_EMULATION=y/' .config
 
 # A 900 MHz Celeron M does not need a 1000 Hz tick; i386_defconfig defaults to HZ=1000.
 # 250 Hz is the standard netbook choice (battery, fewer wakeups, negligible latency cost).
