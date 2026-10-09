@@ -36,7 +36,9 @@ WANT="ATA ATA_PIIX BLK_DEV_SD SCSI \
       ZSMALLOC ZRAM CRYPTO_LZ4 \
       FB FB_CORE FB_VESA FRAMEBUFFER_CONSOLE VT VT_CONSOLE INPUT \
       SERIAL_8250 SERIAL_8250_CONSOLE \
-      EXT4_FS VFAT_FS NLS_CODEPAGE_437 NLS_ISO8859_1"
+      EXT4_FS VFAT_FS NLS_CODEPAGE_437 NLS_ISO8859_1 \
+      RTW88 RTW88_8821CU \
+      IWLWIFI IWLDVM"
 
 PREV=""
 for pass in 1 2 3 4 5 6; do
@@ -79,8 +81,15 @@ grep -q '^CONFIG_FRAMEBUFFER_CONSOLE=y' .config || { echo "FATAL: no framebuffer
 grep -q '^CONFIG_DRM_FBDEV_EMULATION=y' .config || { echo "FATAL: no DRM fbdev emulation (console dies at i915 init)"; exit 1; }
 grep -q '^CONFIG_MEDIA_SUPPORT=y' .config || { echo "FATAL: no media subsystem (webcam advertised but absent)"; exit 1; }
 grep -q '^CONFIG_USB_VIDEO_CLASS=y' .config || { echo "FATAL: uvcvideo (webcam) not built-in"; exit 1; }
+# WiFi. The internal AR2425 (ath5k) needs nothing beyond the ATH5K set already forced
+# above. rtw88 covers the RTL8811CU/RTL8821CU USB dongles the owner has (0bda:c811);
+# iwlwifi + iwldvm cover the Intel Centrino Advanced-N 6250 (8086:0087), which is a
+# DVM (not MVM) part. See docs/wifi-analysis.md for the per-card evidence.
+grep -q '^CONFIG_RTW88_8821CU=y' .config || { echo "FATAL: rtw88 8821cu (USB wifi dongle) not built-in"; exit 1; }
+grep -q '^CONFIG_IWLWIFI=y' .config || { echo "FATAL: iwlwifi not built-in"; exit 1; }
+grep -q '^CONFIG_IWLDVM=y' .config || { echo "FATAL: iwldvm (Intel 6250 DVM support) not built-in"; exit 1; }
 grep -q '^CONFIG_HZ_1000=y' .config && { echo "FATAL: HZ=1000 on a 900 MHz netbook"; exit 1; }
-echo "CONFIG checks passed:"; grep -E 'CONFIG_(X86_PAE|HIGHMEM4G|MPENTIUMM|DRM_I915|ATH5K|ATL2|USB_STORAGE|ATA_PIIX|FRAMEBUFFER_CONSOLE|DRM_FBDEV_EMULATION|MEDIA_SUPPORT|USB_VIDEO_CLASS|HZ)=' .config | sort -u
+echo "CONFIG checks passed:"; grep -E 'CONFIG_(X86_PAE|HIGHMEM4G|MPENTIUMM|DRM_I915|ATH5K|RTW88_8821CU|IWLWIFI|IWLDVM|ATL2|USB_STORAGE|ATA_PIIX|FRAMEBUFFER_CONSOLE|DRM_FBDEV_EMULATION|MEDIA_SUPPORT|USB_VIDEO_CLASS|HZ)=' .config | sort -u
 
 make -j"$(nproc)" LOCALVERSION=-eeepc bzImage modules
 

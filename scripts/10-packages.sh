@@ -38,9 +38,13 @@ EOF
 apt-get update
 apt-get install -y --no-install-recommends locales tzdata keyboard-configuration console-setup
 
+# Networking: iproute2 provides `ip`/`ss` (landing at /bin/ip + /sbin/ip via
+# usrmerge) and net-tools provides `ifconfig`/`route`/`netstat` (/sbin). Neither
+# was in the image, which is why there was no way to see the LAN IP on-device.
 apt-get install -y \
   systemd-sysv dbus sudo kmod cpio initramfs-tools grub-pc \
   network-manager network-manager-gnome wpasupplicant iw wireless-tools rfkill \
+  iproute2 net-tools \
   openssh-server avahi-daemon \
   curl wget rsync tmux htop ncdu less file nano pciutils usbutils \
   alsa-utils volumeicon-alsa \
@@ -54,7 +58,8 @@ apt-get install -y \
   firefox-esr netsurf-gtk feh \
   fonts-dejavu-core fonts-liberation \
   acpi acpid intel-microcode \
-  systemd-timesyncd
+  systemd-timesyncd \
+  firmware-iwlwifi firmware-realtek
 
 # Kernel build toolchain — needed in the chroot to compile 20-kernel.sh, removed later by 90-cleanup.sh
 apt-get install -y --no-install-recommends \

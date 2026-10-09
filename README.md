@@ -67,10 +67,13 @@ for the one-time boot menu and pick the card. First boot grows the root filesyst
 | | |
 |---|---|
 | User / password | `sam` / `eeepc` — has sudo, change with `passwd`; root is locked |
-| Menu | right-click desktop, or **Super+D** |
-| Terminal | **Super+Enter** |
+| Menu | right-click desktop, or **Ctrl+Alt+Menu** |
+| Terminal | **Ctrl+Alt+T** (the 701 keyboard has no Super/Windows key) |
+| Health check | `eeepc-health` — PASS/FAIL summary of kernel, wifi, network, swap, disk |
+| LAN IP | `ip -4 addr` (iproute2 + net-tools are installed) |
 | Browser | **Super+F** (Firefox ESR; Netsurf installed for light pages) |
 | Wifi | click the **nm-applet** icon in the panel |
+| Report a problem | `sudo deeebian-report.sh --note "what is wrong"` — writes a diagnostics tarball |
 | SSH | `ssh sam@eeepc701.local` |
 | Update | `sudo apt update && sudo apt upgrade` |
 

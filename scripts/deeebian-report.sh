@@ -5,22 +5,42 @@
 # Usage:
 #   deeebian-report.sh                 # collect + upload to Hermes
 #   deeebian-report.sh --local         # collect only, print tarball path
+#   deeebian-report.sh --show          # just print the quick-reference / status banner
 #   deeebian-report.sh --note "wifi drops every 10 min"   # attach a problem description
 #
+# Exit codes: 0 = tarball produced (and, if not --local, uploaded);
+#             1 = tarball produced but no upload target reachable (so an unattended
+#                 caller is NOT misled into thinking the report reached Hermes);
+#             2 = bad usage. Nothing calls this automatically yet, so the exit codes
+#             are informational; any future first-boot/unit caller should tolerate 1.
+#
 # Upload target: Hermes inbox on the homelab (scp prompts for sam's password unless
-# an SSH key is already authorized).
+# an SSH key is already authorized). Override with DEEEPC_INBOX_HOST.
 set -u
 
 NOTE=""
 LOCAL_ONLY=0
+SHOW=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --local) LOCAL_ONLY=1; shift ;;
+        --show) SHOW=1; shift ;;
         --note) NOTE="${2:-}"; shift 2 ;;
         -h|--help) grep '^#' "$0" | head -12; exit 0 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
+
+# --show: the desktop "System info" path. Print the quick reference and the live
+# LAN IP, then exit -- no collection, no tarball, always exit 0. Works with or
+# without `ip` (reads /proc/net/fib_trie), so it is safe before the PATH fix lands.
+if [ "$SHOW" = "1" ]; then
+    [ -r /etc/motd ] && cat /etc/motd
+    ip4=$(grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' /proc/net/fib_trie 2>/dev/null \
+          | grep -vE '^(0\.|127\.|255\.)' | sort -u | tr '\n' ' ')
+    printf '  hostname: %s   LAN IP: %s\n\n' "$(hostname)" "${ip4:-none yet}"
+    exit 0
+fi
 
 STAMP=$(date +%Y%m%d-%H%M%S)
 HOST=$(hostname)
@@ -195,7 +215,7 @@ else
     echo
     echo "Could not reach Hermes. Options:"
     echo "  - connect this Eee PC to your home LAN and re-run this script, or"
-    echo "  - copy $TARBALL to any machine that can reach hermes-prod and:"
-    echo "      scp $TARBALL sam@192.168.70.130:deeebian-inbox/"
+    echo "  - copy $TARBALL to any machine that can reach Hermes and:"
+    echo "      scp $TARBALL ${DEEEPC_INBOX_HOST:-sam@100.69.56.74}:deeebian-inbox/"
     exit 1
 fi
