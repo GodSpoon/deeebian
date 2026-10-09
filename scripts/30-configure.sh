@@ -300,6 +300,88 @@ WantedBy=multi-user.target
 EOF
 systemctl enable expand-root.service
 
+# --- first-boot: give the internal SSD the BOOT path (kernel/initramfs/GRUB) --------
+# The 701's 3.7 GB internal SSD sits idle while the OS runs from the removable card, and
+# it reads ~35 MB/s against the card's ~17 MB/s. This puts the READ-MOSTLY boot path on the
+# fixed disk and leaves the constantly-written root on the card you can replace.
+#
+# It is deliberately NON-DESTRUCTIVE: /boot is COPIED, never moved, and only sda1 is
+# reformatted (the possible ASUS factory recovery partitions sda2/3/4 are left alone). If
+# every SSD step fails, the SD boot path is untouched and the machine still boots as before.
+# An unattended job on a machine its owner cannot reach must never be able to brick it.
+#
+# Runs once, on the first boot of a fresh card. Opt out with:  touch /boot/NO-SSD-BOOT-SETUP
+cat > /usr/local/bin/ssd-boot <<'SSDBOOT'
+#!/bin/bash
+exec /usr/local/sbin/ssd-boot.sh "$@"
+SSDBOOT
+chmod +x /usr/local/bin/ssd-boot
+
+# status: what the SSD boot copy looks like right now
+cat > /usr/local/bin/ssd-boot-status <<'SSDSTATUS'
+#!/bin/bash
+# Report the state of the SSD boot copy without changing anything.
+SSD=${EEEPC_SSD_DEV:-/dev/sda}
+PART=${EEEPC_SSD_PART:-${SSD}1}
+echo "=== SSD boot status ==="
+if [ ! -b "$PART" ]; then echo "  $PART not present."; exit 0; fi
+printf '  device   : %s (%s)\n' "$PART" "$(cat /sys/class/block/$(basename "$SSD")/device/model 2>/dev/null)"
+printf '  label    : %s\n' "$(blkid -s LABEL -o value "$PART" 2>/dev/null || echo none)"
+printf '  uuid     : %s\n' "$(blkid -s UUID  -o value "$PART" 2>/dev/null || echo none)"
+printf '  fs       : %s\n' "$(blkid -s TYPE  -o value "$PART" 2>/dev/null || echo none)"
+if [ "$(blkid -s LABEL -o value "$PART" 2>/dev/null)" != "EEEPCBOOT" ]; then
+  echo "  -> the SSD has NOT been set up for boot (label is not EEEPBOOT)."
+  echo "     run:  sudo ssd-boot"
+  exit 0
+fi
+tmp=$(mktemp -d); trap 'umount "$tmp" 2>/dev/null; rmdir "$tmp"' EXIT
+if mount -o ro "$PART" "$tmp" 2>/dev/null; then
+  echo "  contents : $(ls "$tmp" | tr '\n' ' ')"
+  echo "  grub.cfg : $( [ -f "$tmp/grub/grub.cfg" ] && echo present || echo MISSING )"
+  echo "  rescue   : $( [ -f "$tmp/initrd.img-rescue" ] && echo present || echo MISSING )"
+fi
+echo "  root     : UUID=$(findmnt -n -o UUID / 2>/dev/null) (on $(findmnt -n -o SOURCE / 2>/dev/null))"
+echo "  marker   : $( [ -f /var/lib/eeepc-ssd-boot.done ] && echo "$(head -2 /var/lib/eeepc-ssd-boot.done | tr '\n' ' ')" || echo 'not set up' )"
+echo
+echo "  To boot FROM the SSD: F2 at POST -> Boot -> put the SSD first (or use the Esc menu)."
+echo "  If the SD card is then missing, pick the 'rescue' entry to get a shell."
+SSDSTATUS
+chmod +x /usr/local/bin/ssd-boot-status
+
+cat > /usr/local/sbin/firstboot-ssd-boot.sh <<'EOF'
+#!/bin/bash
+# One-shot first-boot hook. Never fatal: a failure here must not stop the boot.
+[ -f /var/lib/eeepc-ssd-boot.done ] && exit 0
+[ -f /boot/NO-SSD-BOOT-SETUP ] && { echo "ssd-boot: disabled by /boot/NO-SSD-BOOT-SETUP"; exit 0; }
+if [ ! -x /usr/local/sbin/ssd-boot.sh ]; then exit 0; fi
+echo "ssd-boot: first boot -- giving the internal SSD the boot path (see 'ssd-boot-status')"
+/usr/local/sbin/ssd-boot.sh --auto || echo "ssd-boot: did not complete; the SD boot path is unchanged"
+exit 0
+EOF
+chmod +x /usr/local/sbin/firstboot-ssd-boot.sh
+
+# the real implementation ships via /opt/build (ci/build.sh copies it there)
+if [ -f /opt/build/ssd-boot.sh ]; then
+  install -m 0755 /opt/build/ssd-boot.sh /usr/local/sbin/ssd-boot.sh
+else
+  echo "WARN: /opt/build/ssd-boot.sh missing -- SSD boot setup not shipped" >&2
+fi
+cat > /etc/systemd/system/firstboot-ssd-boot.service <<'EOF'
+[Unit]
+Description=First boot: give the internal SSD the boot path (Eee PC 701)
+After=local-fs.target expand-root.service
+Wants=expand-root.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Nice=19
+IOSchedulingClass=idle
+ExecStart=/usr/local/sbin/firstboot-ssd-boot.sh
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl enable firstboot-ssd-boot.service
+
 # --- lightdm autologin into openbox ---
 mkdir -p /etc/lightdm/lightdm.conf.d
 cat > /etc/lightdm/lightdm.conf.d/50-autologin.conf <<'EOF'
@@ -539,6 +621,7 @@ cat > /home/sam/.config/openbox/menu.xml <<'EOF'
     <item label="Health check (PASS/FAIL summary)"><action name="Execute"><execute>lxterminal -e /usr/local/bin/eeepc-health-tui</execute></action></item>
     <item label="Thermals (temps, fan, CPU freq)"><action name="Execute"><execute>lxterminal -e /usr/local/bin/eeepc-thermals-tui</execute></action></item>
     <item label="Benchmark (quick)"><action name="Execute"><execute>lxterminal -e /usr/local/bin/eeepc-bench-tui</execute></action></item>
+    <item label="SSD boot status (internal SSD)"><action name="Execute"><execute>lxterminal -e /usr/local/bin/ssd-boot-status</execute></action></item>
     <item label="Web browser (Firefox)"><action name="Execute"><execute>firefox-esr</execute></action></item>
     <item label="Light browser (Netsurf)"><action name="Execute"><execute>netsurf</execute></action></item>
     <item label="Files"><action name="Execute"><execute>pcmanfm</execute></action></item>
@@ -1064,8 +1147,12 @@ cat > /etc/motd <<'EOF'
   Panel has launcher icons too (Terminal / System info / Games / Firefox / Files).
   Battery: `battery-rejuv status` to read the pack; `sudo battery-rejuv full` to
            recalibrate the fuel gauge (full drain, then full charge — a few hours).
-  Games:    eeepc-games   — install curated games, tools & toys (menu-driven)
-            Also right-click the desktop > "Games & software".
+  Games:    already installed: nethack, crawl, angband, sgt-puzzles, chocolate-doom,
+            freedoom, dosbox, ace-of-penguins, cowsay, figlet, cmatrix, nyancat, bb,
+            fortune, xscreensaver and ~70 more. Right-click desktop > "Games & software"
+            to browse/add the bigger titles (scummvm, openttd, supertux...).
+  SSD:      ssd-boot-status — is the internal SSD carrying the boot path?
+            sudo ssd-boot   — (re)copy kernel+initramfs+GRUB onto the SSD
   Runs from SD; swap is zram (RAM-backed, no card wear). 16 GB+ recommended.
 
 EOF
