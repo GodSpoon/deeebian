@@ -18,9 +18,12 @@ swap, so the card is never written for paging — fast and gentle on the card.
 
 ## Put it on an SD card
 
-> **Card requirement: use a ≤32 GB SDHC card.** The 701's internal reader is SD/SDHC-class and
-> **cannot use SDXC cards** (>32 GB), so a 64 GB+ card will not be recognised by the Eee PC even
-> though it writes fine on a modern machine. A 32 GB SDHC is the practical maximum.
+> **Card note: 32 GB SDHC is the safe choice.** Some Eee PC 701 units are reported not to
+> recognise SDXC cards (>32 GB) in the internal reader, though this is card- and unit-dependent
+> rather than a hard limit — any SDXC-capable host should read SD/SDHC, so a large card may well
+> work. If a big card isn't seen by the BIOS, try an SDHC card. Known 701 reader quirks are the
+> "high voltage" mode some cards need and the BIOS `OS Installation` setting if you hit write
+> errors. A 32 GB SDHC is the known-good default.
 
 Get the image from the [Releases page](../../releases), then write it to the card.
 
