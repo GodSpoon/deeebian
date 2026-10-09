@@ -172,7 +172,9 @@ echo "Report written: $TARBALL ($(du -h "$TARBALL" | cut -f1))"
 [ "$LOCAL_ONLY" = "1" ] && exit 0
 
 # --- upload to Hermes inbox ---
-TARGETS="sam@192.168.70.130 sam@hermes-prod.nb.rip"
+# Override with DEEEPC_INBOX_HOST=<host> if your homelab address differs.
+# NOTE: sam@hermes-prod.nb.rip no longer resolves; the NetBird address below does.
+TARGETS="${DEEEPC_INBOX_HOST:-sam@100.69.56.74}"
 for t in $TARGETS; do
     echo "Uploading to $t:deeebian-inbox/ ..."
     if scp -o ConnectTimeout=8 -o BatchMode=yes "$TARBALL" "$t:deeebian-inbox/" 2>/dev/null; then

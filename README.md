@@ -18,6 +18,10 @@ swap, so the card is never written for paging — fast and gentle on the card.
 
 ## Put it on an SD card
 
+> **Card requirement: use a ≤32 GB SDHC card.** The 701's internal reader is SD/SDHC-class and
+> **cannot use SDXC cards** (>32 GB), so a 64 GB+ card will not be recognised by the Eee PC even
+> though it writes fine on a modern machine. A 32 GB SDHC is the practical maximum.
+
 Get the image from the [Releases page](../../releases), then write it to the card.
 
 **Step 1 — find the card (get this wrong and you wipe your disk):**
@@ -88,12 +92,15 @@ Firefox ESR 128 runs but is slow — this is a 900 MHz 2007 CPU; Netsurf is the 
 | Atheros AR5007EG wifi | ath5k (built-in, no blob) | works |
 | Attansic/Atheros L2 ethernet | atl2 (built-in) | works |
 | Realtek ALC662 audio | snd-hda-intel, auto-unmute on boot | works |
-| Internal SD reader | usb-storage (built-in) | bootable from BIOS |
-| Webcam | uvcvideo | works |
+| Internal SD reader | usb-storage (built-in) | bootable from BIOS, **≤32 GB SDHC only** |
+| Webcam | uvcvideo (built-in) | works |
 | Fn keys / fan | eeepc-laptop | loaded at boot |
 
 ## Known limitations
 
+- **Stock 512 MB RAM is the real constraint.** The tuning below assumes the memory upgrade to
+  2 GB. At 512 MB the Openbox desktop is tight — Netsurf is the pleasant browser; Firefox ESR
+  will swap heavily. zram swap is sized to installed RAM automatically.
 - Flash-heavy websites are slow — 900 MHz, 2007. Use Netsurf or text browsing.
 - No Bluetooth stack (the 701 has no Bluetooth).
 - Touchpad side-scroll strip acts as a plain scroll edge under libinput.

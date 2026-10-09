@@ -3,3 +3,4 @@ dist/
 *.img.xz
 *.ppm
 __pycache__/
+.ciwatch*.log

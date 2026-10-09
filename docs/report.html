@@ -47,7 +47,7 @@ autologins, NetworkManager wifi, zram swap, and a first-boot root-filesystem exp
 <tr><th>File</th><th>Where</th><th>Size</th></tr>
 <tr><td><code>eeepc701-linux.img.xz</code></td><td><code>pve-r630:/var/lib/vz/eeepc/</code> (+ sha256 sidecar)</td><td>~600 MB</td></tr>
 <tr><td><code>eeepc701-linux.img</code></td><td>same directory (raw, for testing)</td><td>7.0 GiB</td></tr>
-<tr><td>build scripts</td><td><code>~/workspace/eeepc701/scripts/</code> on hermes-prod</td><td>13 scripts</td></tr>
+<tr><td>build scripts</td><td><code>github.com/GodSpoon/deeebian</code> (<code>scripts/</code>, <code>ci/</code>)</td><td>13 scripts</td></tr>
 <tr><td>public release</td><td><a href="https://github.com/GodSpoon/deeebian/releases/tag/v1.0.0"><code>github.com/GodSpoon/deeebian/releases/tag/v1.0.0</code></a></td><td>image + sha256</td></tr>
 </table>
 <p class="sub">Download: <a href="https://github.com/GodSpoon/deeebian/releases/download/v1.0.0/eeepc701-linux.img.xz">eeepc701-linux.img.xz</a> (~620&nbsp;MB) &middot; always verify against the release's <a href="https://github.com/GodSpoon/deeebian/releases/download/v1.0.0/eeepc701-linux.img.xz.sha256">.sha256</a> sidecar — each CI rebuild produces a distinct hash.</p>
@@ -73,7 +73,7 @@ autologins, NetworkManager wifi, zram swap, and a first-boot root-filesystem exp
 <tr><td>Attansic/Atheros L2 ethernet</td><td>atl2 (built-in)</td><td><span class="pill ok">works</span></td></tr>
 <tr><td>Realtek ALC662 audio</td><td>snd-hda-intel (built-in), auto-unmute on boot</td><td><span class="pill ok">works</span></td></tr>
 <tr><td>Internal SD reader (bootable)</td><td>usb-storage (built-in)</td><td><span class="pill ok">works</span> appears as USB mass storage in BIOS</td></tr>
-<tr><td>Webcam</td><td>uvcvideo</td><td><span class="pill ok">works</span></td></tr>
+<tr><td>Webcam</td><td>uvcvideo (built-in, <code>CONFIG_MEDIA_SUPPORT</code>)</td><td><span class="pill ok">works</span></td></tr>
 <tr><td>Fn keys, fan</td><td>eeepc-laptop (built-in, loaded at boot)</td><td><span class="pill ok">works</span></td></tr>
 <tr><td>Modern heavy web</td><td>Firefox ESR 128</td><td><span class="pill bad">slow</span> physics of a 900 MHz 2007 CPU — use Netsurf for light pages</td></tr>
 </table>
@@ -132,6 +132,7 @@ filesystem to fill the whole card.</p>
 <li><b>Flash/storage heavy websites</b> are slow — this is a 900 MHz CPU from 2007; Netsurf or
 text-mode browsing is the pleasant path.</li>
 <li><b>No Bluetooth stack installed</b> (the 701 has none).</li>
+<li><b>SD card</b>: use a ≤32 GB SDHC — the 701's reader cannot use SDXC cards (>32 GB).</li>
 <li><b>Touchpad side-scroll strip</b> behaves as a plain scroll edge under libinput; the
 original multi-touch gestures were never mainlined.</li>
 <li><b>Timezone is UTC</b> by default — <code>sudo timedatectl set-timezone America/Chicago</code> or your zone.</li>
@@ -139,8 +140,8 @@ original multi-touch gestures were never mainlined.</li>
 </ul>
 
 <h2>Rebuild from source</h2>
-<p>Scripts live in <code>~/workspace/eeepc701/scripts/</code> (also copied to
-<code>pve-r630:/var/lib/vz/eeepc/</code>). Pipeline:</p>
+<p>Scripts live in the repository (<code>scripts/</code>, driven by <code>ci/build.sh</code>) —
+that checkout is the source of truth. Pipeline:</p>
 <pre># inside an i386 bookworm chroot (kernel tree bind-mounted at /build):
 10-packages.sh   # apt set + package set
 20-kernel.sh     # 6.12 LTS non-PAE kernel, drivers built-in, hard config asserts
