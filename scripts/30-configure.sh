@@ -243,6 +243,14 @@ fgcolor=#fffff8f8eeee
 EOF
 chown -R sam:sam /home/sam/.config
 
+# --- ship the on-device diagnostics collector --------------------------------
+# The collector existed in the repo but was never installed into the image, so the
+# "run deeebian-report.sh on the 701" monitoring path did not actually exist on the box.
+if [ -f /opt/build/deeebian-report.sh ]; then
+  install -m 0755 /opt/build/deeebian-report.sh /usr/local/sbin/deeebian-report.sh
+  ln -sf /usr/local/sbin/deeebian-report.sh /usr/local/bin/deeebian-report.sh
+fi
+
 # --- MOTD with quick reference ---
 cat > /etc/motd <<'EOF'
 
