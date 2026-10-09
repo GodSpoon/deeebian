@@ -4,3 +4,4 @@ dist/
 *.ppm
 __pycache__/
 .ciwatch*.log
+backups/
