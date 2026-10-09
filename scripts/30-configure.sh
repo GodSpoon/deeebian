@@ -34,6 +34,14 @@ usermod -aG sudo sam
 passwd -l root
 
 # --- sshd: no root login; host keys are generated before each start (clone-safe) ---
+# MEASURED on hardware: `ssh-keygen -A` costs ~51 s on the FIRST boot (generating the
+# RSA/ECDSA/ED25519 keypairs on a 900 MHz Celeron) and then blocks sshd for that whole
+# time, because it runs as ExecStartPre. On every SUBSEQUENT boot it is ~0.18 s, since
+# -A is idempotent and the keys already exist. So this is a one-time first-boot cost,
+# not a recurring defect -- do not "optimise" it away by dropping the keygen (that
+# would ship a fixed host key, which is a security problem, and it is what makes the
+# image clone-safe). If the one-time 51 s ever matters, move it to a separate
+# sshd-keygen unit that sshd does not have to wait for.
 sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
 mkdir -p /etc/systemd/system/ssh.service.d
 cat > /etc/systemd/system/ssh.service.d/override.conf <<'EOF'
@@ -44,15 +52,25 @@ ExecStartPre=/usr/sbin/sshd -t
 EOF
 systemctl enable ssh.service
 
-# --- zram swap: sized to the installed RAM, lz4 ---
+# --- zram swap: sized to the installed RAM, lz4 where the kernel supports it ---
 # 1 GB is wrong on a stock 512 MB 701 (3x overcommit); scale with MemTotal and cap at 1 GB.
+#
+# ALGORITHM, HONESTLY: we prefer lz4, but this kernel does NOT build the LZ4 zram
+# backend. Modern zram (CONFIG_ZRAM_BACKEND_*) exposes only the backends that were
+# compiled; on this config that is lzo/lzo-rle (CONFIG_ZRAM_BACKEND_FORCE_LZO=y), and
+# CONFIG_ZRAM_DEF_COMP is already "lzo-rle". So the original `echo lz4 > comp_algorithm`
+# silently failed ('|| true') and the device quietly ran lzo-rle. That is a perfectly
+# good algorithm — in the baseline it measured 2.85:1 with a fast kernel path — but a
+# silent fallback is exactly the kind of lie this project's asserts exist to prevent.
+# We now select lz4 only if the kernel offers it, else fall back to lzo-rle (explicitly,
+# with a log line), and we report the algorithm actually in use.
 cat > /etc/systemd/system/zram-swap.service <<'EOF'
 [Unit]
 Description=Configure zram swap
 After=local-fs.target
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c "mem=$(awk '/MemTotal/{print $2*1024}' /proc/meminfo); size=$((mem<1073741824 ? mem : 1073741824)); [ -e /dev/zram0 ] || cat /sys/class/zram-control/hot_add >/dev/null; echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null || true; echo $size > /sys/block/zram0/disksize; mkswap /dev/zram0 >/dev/null; swapon -p 100 /dev/zram0"
+ExecStart=/bin/sh -c "mem=$(awk '/MemTotal/{print $2*1024}' /proc/meminfo); size=$((mem<1073741824 ? mem : 1073741824)); [ -e /dev/zram0 ] || cat /sys/class/zram-control/hot_add >/dev/null; algo=lzo-rle; if grep -q lz4 /sys/block/zram0/comp_algorithm 2>/dev/null; then algo=lz4; fi; echo \"$algo\" > /sys/block/zram0/comp_algorithm 2>/dev/null || true; echo $size > /sys/block/zram0/disksize; mkswap /dev/zram0 >/dev/null; swapon -p 100 /dev/zram0; echo \"zram: $(cat /sys/block/zram0/comp_algorithm 2>/dev/null | tr -d '[]') selected, $((${size}/1048576)) MiB\""
 RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
