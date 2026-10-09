@@ -76,6 +76,8 @@ for the one-time boot menu and pick the card. First boot grows the root filesyst
 | Report a problem | `sudo deeebian-report.sh --note "what is wrong"` — writes a diagnostics tarball |
 | SSH | `ssh sam@eeepc701.local` |
 | Update | `sudo apt update && sudo apt upgrade` |
+| Battery status | `battery-rejuv status` |
+| Recalibrate battery | `sudo battery-rejuv full` (or menu → Battery recalibration) |
 
 ## Why it stays light
 
@@ -83,11 +85,40 @@ for the one-time boot menu and pick the card. First boot grows the root filesyst
 |---|---|---|
 | RAM | zram swap 1 GB lz4, `swappiness=150`, `earlyoom`, **no disk swap** | Paging happens in RAM; the SD card is never written for memory pressure — faster, and no card wear |
 | Power | `tlp`, `wifi.powersave=2` (ath5k stability), acpid, capped journald | Longest battery on the original cells |
+| Battery gauge | `battery-rejuv` (on-device tool) | One full drain→recharge re-teaches the BMS the pack's real endpoints |
 | Card life | ext4 `noatime,commit=60`, /tmp on tmpfs, doc-files stripped, 30 MB journal | Fewer small random writes |
 | Boot | all 701 drivers built into the kernel | Boots even if the initramfs is ever damaged |
 
 Measured on the shipped image in a 2 GB VM: **~155 MB RAM at the console, ~250-350 MB at the desktop**.
 Firefox ESR 128 runs but is slow — this is a 900 MHz 2007 CPU; Netsurf is the pleasant path.
+
+## Battery care
+
+The 701's pack is **2×18650 Li-ion in series (7.4 V nominal, ~4400 mAh)** behind a BMS. An aged or
+long-idle pack's *fuel gauge* (the BMS coulomb counter) drifts, so it reports a wrong "100%" and a
+wrong runtime. One **full discharge → full recharge** makes the gauge re-learn the real endpoints.
+This does **not** repair worn cells — it resynchronises the gauge. Expect the reported full
+capacity to *drop* afterwards if the gauge had been optimistic; that is the point.
+
+The tool is installed as **`battery-rejuv`** (source: `scripts/battery-rejuv.sh`):
+
+```bash
+battery-rejuv status     # live telemetry (volts, %, state), changes nothing
+sudo battery-rejuv full  # drain to the floor, then prompt to charge to a true 100% + top-off
+sudo battery-rejuv drain # just the discharge (do it on battery, unplugged)
+sudo battery-rejuv charge# just monitor a recharge to 100%
+sudo battery-rejuv restore # undo the "keep awake" settings if a run died
+```
+
+It also appears in the Openbox menu (**Battery recalibration**). Safety rails: the drain stops at
+`BATTERY_FLOOR_PCT` (default 6%) **or** `BATTERY_FLOOR_UV` (default 6.6 V = 3.3 V/cell), whichever
+comes first; the firmware hard-cut is the last line of defence, never the plan. A `systemd-inhibit`
+lock (`idle:sleep:handle-lid-switch`) keeps the machine awake and off idle-suspend for the whole
+run, and all logging goes to `/run` (tmpfs) so a multi-hour cycle writes nothing to the SD card.
+
+For a hands-off run detached from your terminal: `sudo systemctl start battery-rejuv`
+(oneshot unit, not enabled at boot). Regression test: `sudo scripts/test-battery-rejuv.sh`
+exercises the drain/charge state machines against a fake `power_supply` tree.
 
 ## Hardware support
 

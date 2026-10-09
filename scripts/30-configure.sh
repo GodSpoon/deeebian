@@ -392,6 +392,9 @@ cat > /home/sam/.config/openbox/menu.xml <<'EOF'
     <item label="Network connections"><action name="Execute"><execute>nm-connection-editor</execute></action></item>
     <item label="Volume control"><action name="Execute"><execute>lxterminal -e alsamixer</execute></action></item>
     <separator/>
+    <item label="Battery recalibration (drain+charge)"><action name="Execute"><execute>lxterminal -e "sudo battery-rejuv full"</execute></action></item>
+    <item label="Battery status"><action name="Execute"><execute>lxterminal -e "battery-rejuv status; read -p 'press Enter '"</execute></action></item>
+    <separator/>
     <item label="Lock screen"><action name="Execute"><execute>lxlock</execute></action></item>
     <item label="Reboot"><action name="Execute"><execute>systemctl reboot</execute></action></item>
     <item label="Shutdown"><action name="Execute"><execute>systemctl poweroff</execute></action></item>
@@ -813,6 +816,28 @@ EOF
 chown sam:sam /home/sam/.config/pcmanfm/default/desktop-items-0.conf
 chmod 0644 /home/sam/.config/pcmanfm/default/desktop-items-0.conf
 
+# --- ship the battery conditioning / fuel-gauge recalibration tool ----------
+# The aged 701 pack's BMS fuel gauge drifts, so "100%" and the runtime estimate lie. A single
+# full discharge -> full recharge re-learns the real endpoints. Installed as battery-rejuv
+# (also reachable from the Openbox menu). The companion unit lets you run it detached from a
+# terminal via systemd-run/start so a dropped SSH session doesn't kill a multi-hour cycle.
+if [ -f /opt/build/battery-rejuv.sh ]; then
+  install -m 0755 /opt/build/battery-rejuv.sh /usr/local/sbin/battery-rejuv
+  ln -sf /usr/local/sbin/battery-rejuv /usr/local/bin/battery-rejuv
+  cat > /etc/systemd/system/battery-rejuv.service <<'EOF'
+[Unit]
+Description=Battery conditioning / fuel-gauge recalibration (Eee PC 701)
+Documentation=man:systemd-inhibit(1)
+# Deliberately NOT enabled: run on demand with  systemctl start battery-rejuv
+[Service]
+Type=oneshot
+RemainAfterExit=no
+TimeoutStartSec=infinity
+# root needed for systemd-inhibit + backlight writes
+ExecStart=/usr/local/sbin/battery-rejuv full --yes
+EOF
+fi
+
 # --- MOTD with quick reference ---
 # NOTE: Debian's sshd runs with UsePAM no, so sshd does NOT print /etc/motd, and an
 # Openbox session shows no MOTD either. /etc/profile.d/00-eeepc-motd.sh above prints
@@ -831,6 +856,8 @@ cat > /etc/motd <<'EOF'
   Support:  sudo deeebian-report.sh --note "describe the problem"
             — writes a diagnostics tarball and tries to send it to Hermes
   Panel has launcher icons too (Terminal / System info / Firefox / Files).
+  Battery: `battery-rejuv status` to read the pack; `sudo battery-rejuv full` to
+           recalibrate the fuel gauge (full drain, then full charge — a few hours).
   Runs from SD; swap is zram (RAM-backed, no card wear). Prefer a <=32 GB SDHC.
 
 EOF
