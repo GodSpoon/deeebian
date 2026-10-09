@@ -1,0 +1,325 @@
+diff --git a/scripts/10-packages.sh b/scripts/10-packages.sh
+index 2356546..b443dd9 100644
+--- a/scripts/10-packages.sh
++++ b/scripts/10-packages.sh
+@@ -41,6 +41,7 @@ apt-get install -y --no-install-recommends locales tzdata keyboard-configuration
+ apt-get install -y \
+   systemd-sysv dbus sudo kmod cpio initramfs-tools grub-pc \
+   network-manager network-manager-gnome wpasupplicant iw wireless-tools rfkill \
++  iproute2 net-tools \
+   openssh-server avahi-daemon \
+   curl wget rsync tmux htop ncdu less file nano pciutils usbutils \
+   alsa-utils volumeicon-alsa \
+diff --git a/scripts/30-configure.sh b/scripts/30-configure.sh
+index deba968..c84e754 100644
+--- a/scripts/30-configure.sh
++++ b/scripts/30-configure.sh
+@@ -179,18 +179,210 @@ autologin-user-timeout=0
+ user-session=openbox
+ EOF
+ 
++# --- Eee PC "system info" action -------------------------------------------------
++# The user's second complaint was "can't see the LAN IP", with neither `ip` nor
++# `ifconfig` on the box and no obvious place to look. This prints everything a newcomer
++# needs in one terminal window, and degrades gracefully when iproute2 is missing
++# (falls back to nmcli and /proc instead of hard-failing).
++cat > /usr/local/bin/eeepc-sysinfo <<'SYSINFO_EOF'
++#!/bin/bash
++# eeepc-sysinfo — one-shot system/network report for the ASUS Eee PC 701.
++# Never relies on iproute2 alone: uses `ip` when present, else nmcli / /proc.
++export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
++sep() { printf '%s\n' '------------------------------------------------------------'; }
++
++echo "=== System info   $(date '+%Y-%m-%d %H:%M') ==="
++echo "host    : $(hostname)"
++echo "kernel  : $(uname -sr)  ($(uname -m))"
++echo "uptime  :$(uptime | sed 's/^ *//; s/.*up //; s/, *[0-9]* user.*//')"
++sep
++
++echo "--- IPv4 addresses ---"
++if command -v ip >/dev/null 2>&1; then
++  ip -4 addr show 2>/dev/null | awk '/^[0-9]+:/{ifn=$2} /inet /{print "  " ifn " " $2}'
++else
++  # iproute2 absent: /proc/net/fib_trie lists the LOCAL /32 addresses.
++  if [ -r /proc/net/fib_trie ]; then
++    awk '/^ *\|-- /{a=$2} /\/32 host LOCAL/{if (a != "" && a != "127.0.0.1") print "  " a; a=""}' \
++      /proc/net/fib_trie 2>/dev/null | sort -u
++  else
++    echo "  (/proc/net/fib_trie unavailable)"
++  fi
++fi
++sep
++
++echo "--- Default route / gateway ---"
++if command -v ip >/dev/null 2>&1; then
++  ip route 2>/dev/null | sed 's/^/  /'
++else
++  # iproute2 absent: /proc/net/route holds the gateway as little-endian hex.
++  if [ -r /proc/net/route ]; then
++    while read -r r_if r_dest r_gw _; do
++      [ "$r_dest" = "00000000" ] || continue
++      g=$((16#$r_gw))
++      printf '  default via %d.%d.%d.%d dev %s\n' \
++        $(( g & 255 )) $(( (g>>8) & 255 )) $(( (g>>16) & 255 )) $(( (g>>24) & 255 )) "$r_if"
++    done < /proc/net/route
++  else
++    echo "  (/proc/net/route unavailable)"
++  fi
++fi
++sep
++
++echo "--- NetworkManager devices ---"
++if command -v nmcli >/dev/null 2>&1; then
++  nmcli -f DEVICE,TYPE,STATE dev 2>/dev/null | sed 's/^/  /'
++  echo
++  nmcli -f DEVICE,TYPE,STATE,IP4.ADDRESS dev 2>/dev/null | sed 's/^/  /'
++else
++  echo "  (nmcli not available)"
++fi
++sep
++
++echo "--- Wireless / rfkill ---"
++if [ -x /usr/sbin/rfkill ]; then
++  /usr/sbin/rfkill list 2>/dev/null | sed 's/^/  /'
++else
++  echo "  (/usr/sbin/rfkill not installed)"
++fi
++sep
++
++echo "--- Memory (MiB) ---"
++free -m 2>/dev/null | sed 's/^/  /'
++sep
++
++echo "--- Disk usage ---"
++df -h 2>/dev/null | sed 's/^/  /'
++sep
++
++echo "--- Block devices ---"
++if command -v lsblk >/dev/null 2>&1; then
++  lsblk 2>/dev/null | sed 's/^/  /'
++else
++  cat /proc/partitions 2>/dev/null | sed 's/^/  /'
++fi
++sep
++echo "Close the window (Ctrl+D or the X) when done."
++SYSINFO_EOF
++chmod 0755 /usr/local/bin/eeepc-sysinfo
++
++# .desktop entry for the same action: tint2 reads it for its launcher icon and the
++# desktop copy below gives a no-keybind click-to-run icon.
++mkdir -p /usr/local/share/applications
++cat > /usr/local/share/applications/eeepc-sysinfo.desktop <<'EOF'
++[Desktop Entry]
++Type=Application
++Name=System info (IP, disk, memory)
++Comment=Show hostname, IP addresses, route, rfkill, free, df, lsblk
++Exec=lxterminal -e eeepc-sysinfo
++Icon=utilities-system-monitor
++Terminal=false
++Categories=System;Monitor;
++EOF
++
+ # --- openbox session for sam: panel, applets, keybinds ---
+ mkdir -p /home/sam/.config/openbox
++# autostart: give the desktop a background and, crucially, a NO-KEYBIND way to reach a
++# terminal (desktop icon + panel launcher). xsetroot/tint2/pcmanfm are already installed.
+ cat > /home/sam/.config/openbox/autostart <<'EOF'
++# dark solid root colour — needs no wallpaper package (xsetroot is in x11-xserver-utils)
++xsetroot -solid '#10151c' &
++# pcmanfm manages the desktop: draws the background AND the "Terminal" icon, and with
++# show_wm_menu=1 it still forwards right-clicks to Openbox's root menu.
++pcmanfm --desktop &
++# panel: launcher icons (Sysinfo, Terminal, Firefox, Files) + taskbar + clock + systray
+ tint2 &
+ nm-applet &
+ volumeicon &
+ EOF
++
++# --- tint2: explicit clock + launcher icons ---------------------------------------
++# tint2 otherwise generates ~/.config/tint2/tint2rc on first run; we ship our own so the
++# launcher (L) and clock (C) are guaranteed present on the very first boot.
++mkdir -p /home/sam/.config/tint2
++cat > /home/sam/.config/tint2/tint2rc <<'EOF'
++#--------------------------------------------------------------
++# tint2 for the Eee PC 701 — launcher icons + clock, small and light
++#--------------------------------------------------------------
++rounded = 3
++border_width = 0
++background_color = #1a2230 100
++border_color = #000000 0
++
++# Panel
++panel_monitor = all
++panel_position = bottom center horizontal
++panel_size = 100% 24
++panel_margin = 0 0
++panel_padding = 4 0 4
++panel_background_id = 1
++wm_menu = 1
++panel_dock = 0
++panel_layer = normal
++strut_policy = follow_size
++panel_items = LTSC
++
++# Launcher (L): clickable icons — the no-keybind way to open a terminal
++launcher_padding = 4 2 4
++launcher_background_id = 0
++launcher_icon_size = 20
++launcher_item_app = /usr/local/share/applications/eeepc-sysinfo.desktop
++launcher_item_app = /usr/share/applications/lxterminal.desktop
++launcher_item_app = /usr/share/applications/firefox-esr.desktop
++launcher_item_app = /usr/share/applications/pcmanfm.desktop
++
++# Taskbar (T)
++taskbar_mode = single_desktop
++taskbar_padding = 2 2 2
++taskbar_background_id = 0
++
++# System tray (S)
++systray_padding = 2 2 2
++systray_background_id = 0
++systray_icon_size = 16
++
++# Clock (C)
++time1_format = %a %H:%M
++time1_font = DejaVu Sans 9
++time2_format = %d %b
++time2_font = DejaVu Sans 8
++clock_font_color = #ffffff 100
++clock_padding = 6 0
++clock_background_id = 0
++clock_tooltip = %A %d %B %Y — week %V
++
++# Mouse / misc
++mouse_effects = 0
++font_shadow = 0
++EOF
++
++# --- pcmanfm desktop: solid background + the "Terminal" launcher icon ------------
++mkdir -p /home/sam/.config/pcmanfm/default /home/sam/Desktop
++cat > /home/sam/.config/pcmanfm/default/pcmanfm.conf <<'EOF'
++[config]
++bm_open_method=0
++EOF
++cat > /home/sam/.config/pcmanfm/default/desktop-items-0.conf <<'EOF'
++[*]
++# wallpaper_mode=color fills the desktop with desktop_bg, so no image file is needed.
++wallpaper_mode=color
++wallpaper_common=1
++desktop_bg=#10151c
++desktop_fg=#d0d7de
++desktop_shadow=#000000
++desktop_font=DejaVu Sans 10
++# Forward unhandled clicks to Openbox so right-click still opens the root menu.
++show_wm_menu=1
++show_documents=0
++show_trash=0
++show_mounts=0
++EOF
+ cat > /home/sam/.config/openbox/menu.xml <<'EOF'
+ <?xml version="1.0" encoding="UTF-8"?>
+ <openbox_config xmlns="http://openbox.org/3.4/menu">
+   <menu id="root-menu" label="Openbox 3">
+     <item label="Terminal"><action name="Execute"><execute>lxterminal</execute></action></item>
++    <item label="System info (IP address, disk, memory)"><action name="Execute"><execute>lxterminal -e eeepc-sysinfo</execute></action></item>
+     <item label="Web browser (Firefox)"><action name="Execute"><execute>firefox-esr</execute></action></item>
+     <item label="Light browser (Netsurf)"><action name="Execute"><execute>netsurf</execute></action></item>
+     <item label="Files"><action name="Execute"><execute>pcmanfm</execute></action></item>
+@@ -214,6 +406,14 @@ cat > /home/sam/.config/openbox/rc.xml <<'EOF'
+     </application>
+   </applications>
+   <keyboard>
++    <!-- The Eee PC 701 keyboard has NO Super/"Windows" key, so every "W-..." bind
++         below is unreachable on the real hardware. Ctrl+Alt+T / Ctrl+Alt+X are the
++         usable equivalents; the W-binds are kept only as a fallback for an external
++         keyboard that does have a Super key. There is also a launcher icon and a
++         desktop icon so a terminal can be opened with no keybind at all. -->
++    <keybind key="C-A-t"><action name="Execute"><execute>lxterminal</execute></action></keybind>
++    <keybind key="C-A-x"><action name="Execute"><execute>lxterminal</execute></action></keybind>
++    <keybind key="C-A-s"><action name="Execute"><execute>lxterminal -e eeepc-sysinfo</execute></action></keybind>
+     <keybind key="W-Return"><action name="Execute"><execute>lxterminal</execute></action></keybind>
+     <keybind key="W-F"><action name="Execute"><execute>firefox-esr</execute></action></keybind>
+     <keybind key="W-D"><action name="ShowMenu"><menu>root-menu</menu></action></keybind>
+@@ -241,7 +441,71 @@ fontname=DejaVu Sans Mono 10
+ bgcolor=#000000000000
+ fgcolor=#fffff8f8eeee
+ EOF
++
++# --- Desktop icons: a no-keybind way to reach a terminal and to see the IP ---------
++# pcmanfm draws these (it runs via autostart). The Terminal icon is the answer to
++# "can't open a terminal": one double-click on the 800x480 desktop.
++mkdir -p /home/sam/Desktop
++cat > /home/sam/Desktop/lxterminal.desktop <<'EOF'
++[Desktop Entry]
++Version=1.0
++Type=Application
++Name=Terminal
++Comment=Open a terminal (lxterminal)
++Exec=lxterminal
++Icon=utilities-terminal
++Terminal=false
++Categories=System;TerminalEmulator;
++EOF
++cat > /home/sam/Desktop/eeepc-sysinfo.desktop <<'EOF'
++[Desktop Entry]
++Version=1.0
++Type=Application
++Name=System info (IP address)
++Comment=LAN IP, default route, wifi, disk and memory in one window
++Exec=lxterminal -e eeepc-sysinfo
++Icon=utilities-system-monitor
++Terminal=false
++Categories=System;Monitor;
++EOF
++chmod 0755 /home/sam/Desktop/*.desktop
++
++# --- sam's PATH: /usr/sbin and /sbin so ip/ss/rfkill/iw/ethtool are usable -------
++# Login and interactive shells only; a plain `sh` (e.g. from the Openbox root menu on a
++# minimal image) does not read .bashrc, which is why the keybinds/launchers above call
++# absolute command names where it matters. The trailing guard also runs for the
++# common `case $- in *i*` early-return style of stock Debian .bashrc, but skips
++# non-interactive shells so scripted `sh -c` calls are unaffected.
++if ! grep -q 'eeepc PATH' /home/sam/.bashrc; then
++  cat >> /home/sam/.bashrc <<'EOF'
++
++# eeepc PATH: expose /usr/sbin and /sbin (rfkill, iw, ip, ss, lsblk, …)
++case $- in
++  *i*) PATH="$PATH:/usr/sbin:/sbin" ;;
++esac
++EOF
++fi
++if ! grep -q 'eeepc PATH' /home/sam/.profile; then
++  cat >> /home/sam/.profile <<'EOF'
++
++# eeepc PATH: expose /usr/sbin and /sbin (rfkill, iw, ip, ss, lsblk, …)
++PATH="$PATH:/usr/sbin:/sbin"
++EOF
++fi
++
++# --- fix up ownership and modes on everything written under /home/sam -----------
++# Belt-and-braces: the heredocs above are normally 0644 under a root umask, but a root
++# umask of 0077 is common in image builds and would leave these 0600, i.e. unreadable
++# by sam — which would break the whole Openbox session. Pin all three explicitly:
++#   directories 0755, config files 0644, sam owns it all.
++find /home/sam/.config -type d -exec chmod 0755 {} +
++find /home/sam/.config -type f -exec chmod 0644 {} +
++chmod 0755 /home/sam/.config/openbox /home/sam/.config/tint2 /home/sam/.config/pcmanfm /home/sam/.config/pcmanfm/default
++chmod 0644 /home/sam/.config/openbox/rc.xml /home/sam/.config/openbox/menu.xml /home/sam/.config/openbox/autostart
++
++# --- chown last, so every write that created a file as root is covered -----------
+ chown -R sam:sam /home/sam/.config
++chown -R sam:sam /home/sam/Desktop
+ 
+ # --- ship the on-device diagnostics collector --------------------------------
+ # The collector existed in the repo but was never installed into the image, so the
+@@ -259,7 +523,9 @@ cat > /etc/motd <<'EOF'
+   user: sam   password: eeepc   (change with: passwd)
+   sudo works for sam. Root login is locked.
+ 
+-  Desktop: Openbox. Right-click desktop for menu. Panel: tint2.
++  Desktop: Openbox. Terminal: Ctrl+Alt+T (or double-click the "Terminal" icon).
++  Right-click the desktop for the menu; the tint2 panel has launcher icons too.
++  LAN IP / system status: Ctrl+Alt+S or the "System info" icon.
+   Wifi: click the nm-applet icon in the panel.
+   This system runs from SD; swap is zram (RAM-backed, no SD wear).
+   Boot needs a <=32 GB SDHC card — the 701 reader cannot use SDXC.

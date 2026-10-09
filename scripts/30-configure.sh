@@ -44,14 +44,15 @@ ExecStartPre=/usr/sbin/sshd -t
 EOF
 systemctl enable ssh.service
 
-# --- zram swap (1G lz4) ---
+# --- zram swap: sized to the installed RAM, lz4 ---
+# 1 GB is wrong on a stock 512 MB 701 (3x overcommit); scale with MemTotal and cap at 1 GB.
 cat > /etc/systemd/system/zram-swap.service <<'EOF'
 [Unit]
 Description=Configure zram swap
 After=local-fs.target
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c "[ -e /dev/zram0 ] || cat /sys/class/zram-control/hot_add >/dev/null; echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null || true; echo 1073741824 > /sys/block/zram0/disksize; mkswap /dev/zram0 >/dev/null; swapon -p 100 /dev/zram0"
+ExecStart=/bin/sh -c "mem=$(awk '/MemTotal/{print $2*1024}' /proc/meminfo); size=$((mem<1073741824 ? mem : 1073741824)); [ -e /dev/zram0 ] || cat /sys/class/zram-control/hot_add >/dev/null; echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null || true; echo $size > /sys/block/zram0/disksize; mkswap /dev/zram0 >/dev/null; swapon -p 100 /dev/zram0"
 RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
@@ -61,6 +62,27 @@ cat > /etc/sysctl.d/50-eeepc.conf <<'EOF'
 vm.swappiness=150
 EOF
 
+# --- wifi radio bring-up (MUST run before NetworkManager) ---
+# On the Eee PC 701 the Atheros AR5007EG is frequently soft-blocked or ACPI-powered-down at
+# boot, which leaves the machine with no network and no obvious cause. The previous Alpine
+# attempt on this same hardware booted to a shell with no wifi for exactly this reason.
+# rfkill + the eeepc platform device are both poked here, before NM starts.
+cat > /etc/systemd/system/eeepc-wifi-unblock.service <<'EOF'
+[Unit]
+Description=Unblock/power-on the Eee PC wifi radio before NetworkManager
+DefaultDependencies=no
+After=sysinit.target
+Before=NetworkManager.service network-pre.target
+Wants=network-pre.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c "rfkill unblock all || true; [ -w /sys/devices/platform/eeepc/wlan ] && echo 1 > /sys/devices/platform/eeepc/wlan || true"
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl enable eeepc-wifi-unblock.service
+
 # --- NetworkManager: disable wifi powersave (ath5k stability), enable services ---
 mkdir -p /etc/NetworkManager/conf.d
 cat > /etc/NetworkManager/conf.d/10-eeepc.conf <<'EOF'
@@ -69,12 +91,38 @@ wifi.powersave = 2
 EOF
 systemctl enable NetworkManager avahi-daemon acpid tlp earlyoom systemd-timesyncd
 
-# --- journald cap ---
+# --- journald: log to RAM, never to the SD card ---
+# DietPi's RAMlog idea, done the conflict-free way. A /var/log tmpfs fights journald
+# (DietPi issue #7750); Storage=volatile keeps the journal in /run/log/journal and
+# removes the single biggest continuous-write stream on the card.
 mkdir -p /etc/systemd/journald.conf.d
 cat > /etc/systemd/journald.conf.d/50-eeepc.conf <<'EOF'
 [Journal]
-SystemMaxUse=30M
+Storage=volatile
+RuntimeMaxUse=16M
+SystemMaxUse=0
+ForwardToSyslog=no
 EOF
+
+# --- apt: fewer downloads and fewer SD writes per update (DietPi 97dietpi idea) ---
+cat > /etc/apt/apt.conf.d/97eeepc <<'EOF'
+APT::Install-Recommends "false";
+Acquire::Languages "none";
+Acquire::GzipIndexes "true";
+Acquire::IndexTargets::deb::Packages::KeepCompressedAs "xz";
+Dir::Cache::srcpkgcache "";
+EOF
+
+# --- de-prioritise housekeeping on the single 900 MHz core (DietPi services-priority idea) ---
+# Nice=19 + idle I/O on background daemons keeps interactive work responsive.
+for svc in tlp earlyoom avahi-daemon; do
+  mkdir -p "/etc/systemd/system/${svc}.service.d"
+  cat > "/etc/systemd/system/${svc}.service.d/10-eeepc-prio.conf" <<'EOF'
+[Service]
+Nice=19
+IOSchedulingClass=idle
+EOF
+done
 
 # --- Eee PC platform module (hotkeys, fan) ---
 echo "eeepc-laptop" > /etc/modules-load.d/eeepc.conf
@@ -195,17 +243,26 @@ fgcolor=#fffff8f8eeee
 EOF
 chown -R sam:sam /home/sam/.config
 
+# --- ship the on-device diagnostics collector --------------------------------
+# The collector existed in the repo but was never installed into the image, so the
+# "run deeebian-report.sh on the 701" monitoring path did not actually exist on the box.
+if [ -f /opt/build/deeebian-report.sh ]; then
+  install -m 0755 /opt/build/deeebian-report.sh /usr/local/sbin/deeebian-report.sh
+  ln -sf /usr/local/sbin/deeebian-report.sh /usr/local/bin/deeebian-report.sh
+fi
+
 # --- MOTD with quick reference ---
 cat > /etc/motd <<'EOF'
 
-  EeePC 701 Linux — Debian 12 (bookworm) i386, kernel 6.12 LTS (non-PAE)
-  ------------------------------------------------------------------------
+  Deeebian — Debian 12 (bookworm) i386 for the ASUS Eee PC 701, kernel 6.12 LTS (non-PAE)
+  ----------------------------------------------------------------------------------------
   user: sam   password: eeepc   (change with: passwd)
   sudo works for sam. Root login is locked.
 
   Desktop: Openbox. Right-click desktop for menu. Panel: tint2.
   Wifi: click the nm-applet icon in the panel.
   This system runs from SD; swap is zram (RAM-backed, no SD wear).
+  Boot needs a <=32 GB SDHC card — the 701 reader cannot use SDXC.
 
 EOF
 
