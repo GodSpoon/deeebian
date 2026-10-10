@@ -16,6 +16,10 @@ swap, so the card is never written for paging — fast and gentle on the card.
 
 ---
 
+> **Current state / picking this up in a new session:** read
+> [`docs/HANDOFF-2026-10-09.md`](docs/HANDOFF-2026-10-09.md) first. It records what is verified
+> on hardware, what is not, the known gotchas, and the one open problem.
+
 ## Put it on an SD card
 
 > **Card note: SDXC works.** This was originally believed to be an SD/SDHC-only reader and the

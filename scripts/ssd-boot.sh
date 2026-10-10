@@ -33,22 +33,23 @@ SSD_PART=${EEEPC_SSD_PART:-${SSD}1}
 LABEL=EEEPCBOOT
 MNT=/mnt/eeepc-ssd-boot
 MARKER=/var/lib/eeepc-ssd-boot.done
+
+say()  { printf 'ssd-boot: %s\n' "$*"; }
+die()  { printf 'ssd-boot: FATAL: %s\n' "$*" >&2; exit 1; }
+run()  { if [ "$DRY" = 1 ]; then printf 'ssd-boot: [dry-run] %s\n' "$*"; else "$@"; fi; }
 DRY=0
 AUTO=0
 case "${1:-}" in
   --dry-run) DRY=1 ;;
   --auto)    AUTO=1 ;;
   ""|-h|--help)
-     sed -n '2,30p' "$0" | sed 's/^# \?//'
+     # print only the leading comment block, not the code
+     awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1 {exit}' "$0"
      echo; echo "usage: ssd-boot.sh [--dry-run | --auto]"
      exit 0 ;;
   *) die "unknown option: $1 (use --dry-run or --auto)" ;;
 esac
 [ "$AUTO" = 1 ] && say "auto mode (first-boot hook): running unattended; failures are non-fatal"
-
-say()  { printf 'ssd-boot: %s\n' "$*"; }
-die()  { printf 'ssd-boot: FATAL: %s\n' "$*" >&2; exit 1; }
-run()  { if [ "$DRY" = 1 ]; then printf 'ssd-boot: [dry-run] %s\n' "$*"; else "$@"; fi; }
 
 # ---------------------------------------------------------------- pre-flight
 [ "$(id -u)" = 0 ] || die "must run as root"
@@ -98,22 +99,24 @@ else
   uuid="DRYRUN-BOOT-UUID"
 fi
 
-say "3/6 build a RESCUE initramfs (a missing SD then gives a shell, not a kernel panic)"
-# Without this, /boot on the SSD buys almost nothing: GRUB runs, the kernel loads from the
-# SSD, and then it panics with 'VFS: Unable to mount root fs' because root is on the absent
-# card. The rescue initramfs is what turns that panic into a recoverable prompt.
+say "3/6 stage a rescue initramfs copy (NOTHING is regenerated -- the live /boot is never written)"
 if [ "$DRY" = 0 ]; then
   krel=$(uname -r)
-  if [ -e "/etc/initramfs-tools" ]; then
-    cat > /etc/initramfs-tools/conf.d/eeepc-rescue <<'EOF'
-# eeepc rescue initramfs: drop to a shell instead of panicking when root is absent.
-BOOTIF=0
-EOF
-    update-initramfs -c -k "$krel" 2>/dev/null || say "    (update-initramfs failed; SD path unaffected)"
-    if [ -f "/boot/initrd.img-$krel" ]; then
-      cp -f "/boot/initrd.img-$krel" "$MNT/initrd.img-rescue" 2>/dev/null || true
-      say "    rescue initramfs staged: $MNT/initrd.img-rescue"
-    fi
+  # The rescue behaviour comes from 'break=mount' on the kernel command line, NOT from a
+  # special initramfs -- so there is nothing to build. We only keep a spare copy of the
+  # existing one on the SSD.
+  #
+  # DO NOT bring back 'update-initramfs -c' here. An earlier version did that, and because
+  # /boot is still the SD card's at this point, it REGENERATED /boot/initrd.img-<krel> on
+  # the LIVE CARD -- modifying the exact boot files this script promises not to touch, and
+  # leaving the machine unbootable if the regeneration produced a bad image. (That is
+  # suspected in an unexplained no-boot after a real run on hardware.) The whole safety
+  # model here is that the SD boot path is untouched, so this step must stay read-only.
+  if [ -f "/boot/initrd.img-$krel" ]; then
+    cp -f "/boot/initrd.img-$krel" "$MNT/initrd.img-rescue"
+    say "    spare initramfs staged (byte-identical to the live one; live /boot untouched)"
+  else
+    say "    WARNING: /boot/initrd.img-$krel not found -- rescue entry falls back to the main initrd"
   fi
 fi
 
@@ -138,8 +141,14 @@ if [ "$DRY" = 0 ]; then
 set default=0
 set timeout=5
 
-# Locate our own /boot by label so this works whichever disk the firmware picked.
-search --no-floppy --label --set=root $LABEL
+# Load the filesystem + partition modules explicitly: whatever device the firmware
+# booted from, GRUB must be able to read the ext4 /boot on the SSD.
+insmod part_msdos
+insmod ext2
+# Find our own /boot. UUID first (exact), label as a fallback -- so a re-labelled or
+# re-created boot partition still boots rather than dropping to a grub> prompt.
+search --no-floppy --fs-uuid --set=root $uuid
+if [ -z "\$root" ]; then search --no-floppy --label --set=root $LABEL; fi
 
 menuentry 'Deeebian (SSD boot / SD root)' {
     linux /vmlinuz-$krel root=UUID=$root_uuid ro quiet rootwait
@@ -167,6 +176,10 @@ note:    /boot was COPIED, not moved; the SD boot path is untouched.
 EOF
 fi
 
+if [ "$DRY" = 1 ]; then
+  say "DRY RUN complete -- nothing was written. Re-run without --dry-run to apply."
+  exit 0
+fi
 say "done. The SSD now carries a boot copy."
 say "  * to BOOT from it, set the SSD first in BIOS (F2 -> Boot), or use the Esc menu."
 say "  * re-run after kernel updates to refresh the copy; 'ssd-boot-status' shows state."
