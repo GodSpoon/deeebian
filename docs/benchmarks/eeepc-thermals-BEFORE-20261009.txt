@@ -1,0 +1,28 @@
+=== eeepc-thermals — eeepc701 — 2026-10-09 07:01:33 ===
+-- temperature --
+  thermal_zone0  acpitz   53.0 C  mode=enabled  policy=step_wise  trips: 0=90
+  acpitz     temp       53.0 C
+-- fan --
+  fan RPM        : 1440
+  pwm1 (duty)    : 102 / 255
+  control        : AUTO (pwm1_enable=2) — Embedded Controller curve in charge (normal/desired)
+-- CPU / frequency --
+  cpufreq        : ABSENT — no P-states available.
+                   The Celeron M ULV 353 (Dothan) has no Enhanced SpeedStep.
+                   The 630 MHz "idle" clock is fixed clock modulation, not a
+                   frequency we can select. Nothing to govern, nothing to tune.
+  bogomips       : 1260.13
+-- platform --
+  AC             : online=1
+  battery        : 100%  status=Full
+  zram0          : 43 MB -> 15 MB (ratio 2.9:1)
+-- eeepc platform attributes --
+  available_cpufv      0 1 
+  camera               1
+  cardr                1
+  cpufv                0x201
+  cpufv_disabled       1
+  disp                 
+  driver_override      (null)
+  modalias             platform:eeepc
+  uevent               DRIVER=eeepcMODALIAS=platform:eeepc

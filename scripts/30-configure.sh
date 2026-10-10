@@ -34,6 +34,14 @@ usermod -aG sudo sam
 passwd -l root
 
 # --- sshd: no root login; host keys are generated before each start (clone-safe) ---
+# MEASURED on hardware: `ssh-keygen -A` costs ~51 s on the FIRST boot (generating the
+# RSA/ECDSA/ED25519 keypairs on a 900 MHz Celeron) and then blocks sshd for that whole
+# time, because it runs as ExecStartPre. On every SUBSEQUENT boot it is ~0.18 s, since
+# -A is idempotent and the keys already exist. So this is a one-time first-boot cost,
+# not a recurring defect -- do not "optimise" it away by dropping the keygen (that
+# would ship a fixed host key, which is a security problem, and it is what makes the
+# image clone-safe). If the one-time 51 s ever matters, move it to a separate
+# sshd-keygen unit that sshd does not have to wait for.
 sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
 mkdir -p /etc/systemd/system/ssh.service.d
 cat > /etc/systemd/system/ssh.service.d/override.conf <<'EOF'
@@ -44,22 +52,56 @@ ExecStartPre=/usr/sbin/sshd -t
 EOF
 systemctl enable ssh.service
 
-# --- zram swap: sized to the installed RAM, lz4 ---
+# --- zram swap: sized to the installed RAM, lz4 where the kernel supports it ---
 # 1 GB is wrong on a stock 512 MB 701 (3x overcommit); scale with MemTotal and cap at 1 GB.
+#
+# ALGORITHM, HONESTLY: we prefer lz4, but this kernel does NOT build the LZ4 zram
+# backend. Modern zram (CONFIG_ZRAM_BACKEND_*) exposes only the backends that were
+# compiled; on this config that is lzo/lzo-rle (CONFIG_ZRAM_BACKEND_FORCE_LZO=y), and
+# CONFIG_ZRAM_DEF_COMP is already "lzo-rle". So the original `echo lz4 > comp_algorithm`
+# silently failed ('|| true') and the device quietly ran lzo-rle. That is a perfectly
+# good algorithm — in the baseline it measured 2.85:1 with a fast kernel path — but a
+# silent fallback is exactly the kind of lie this project's asserts exist to prevent.
+# We now select lz4 only if the kernel offers it, else fall back to lzo-rle (explicitly,
+# with a log line), and we report the algorithm actually in use.
 cat > /etc/systemd/system/zram-swap.service <<'EOF'
 [Unit]
 Description=Configure zram swap
 After=local-fs.target
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c "mem=$(awk '/MemTotal/{print $2*1024}' /proc/meminfo); size=$((mem<1073741824 ? mem : 1073741824)); [ -e /dev/zram0 ] || cat /sys/class/zram-control/hot_add >/dev/null; echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null || true; echo $size > /sys/block/zram0/disksize; mkswap /dev/zram0 >/dev/null; swapon -p 100 /dev/zram0"
+ExecStart=/bin/sh -c "mem=$(awk '/MemTotal/{print $2*1024}' /proc/meminfo); size=$((mem<1073741824 ? mem : 1073741824)); [ -e /dev/zram0 ] || cat /sys/class/zram-control/hot_add >/dev/null; algo=lzo-rle; if grep -q lz4 /sys/block/zram0/comp_algorithm 2>/dev/null; then algo=lz4; fi; echo \"$algo\" > /sys/block/zram0/comp_algorithm 2>/dev/null || true; echo $size > /sys/block/zram0/disksize; mkswap /dev/zram0 >/dev/null; swapon -p 100 /dev/zram0; echo \"zram: $(cat /sys/block/zram0/comp_algorithm 2>/dev/null | tr -d '[]') selected, $((${size}/1048576)) MiB\""
 RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 EOF
 systemctl enable zram-swap.service
 cat > /etc/sysctl.d/50-eeepc.conf <<'EOF'
+# vm.swappiness=150 is deliberately > 100. Since Linux 3.x, swappiness above 100 tells the
+# kernel how much to prefer anonymous (page-cache-evictable) memory over the page cache.
+# With zram swap this is exactly what we want: zram pages compress ~3-4:1 (lz4), so swapping
+# anon pages out costs a few hundred microseconds of CPU, while evicting a clean page-cache
+# page costs a 1-10 ms re-read from the SD card. We would rather spend idle CPU than SD I/O,
+# and the card is the bottleneck (and wears out). Keep 150; do NOT "fix" it to 10 as generic
+# netbook advice suggests.
 vm.swappiness=150
+
+# Do not leave dirty pages in RAM to be flushed in one big burst later. On an SD card a
+# smaller, earlier flush is far kinder than a large delayed one (less I/O stall, less
+# write amplification). 8 MB is comfortable for this class of card.
+vm.dirty_ratio=10
+vm.dirty_background_ratio=5
+vm.dirty_expire_centisecs=1500
+vm.dirty_writeback_centisecs=1500
+
+# Inode/dentry cache reclaim: keep the "age it a bit before dropping" default explicitly so
+# a future base-image change cannot silently turn this into drop-everything-at-50%.
+vm.vfs_cache_pressure=100
+
+# Network latency: shorter TCP SYN/keepalive timeouts so a dead wifi network is noticed in
+# seconds, not minutes, on a machine that is often on flaky wifi.
+net.ipv4.tcp_fin_timeout=30
+net.ipv4.tcp_keepalive_time=120
 EOF
 
 # --- wifi radio bring-up (MUST run before NetworkManager) ---
@@ -124,6 +166,94 @@ IOSchedulingClass=idle
 EOF
 done
 
+# --- ship the new perf/thermals tools from /opt/build (ci/build.sh copies them there) ----
+# Fail loudly, like the deeebian-report.sh guard below: silently shipping without them would
+# remove the only way to see temperatures/fan state or to benchmark the machine.
+install -d -m 0755 /usr/local/sbin /usr/local/bin
+for t in eeepc-thermals.sh eeepc-bench.sh eeepc-io-tune.sh eeepc-acpi-profile.sh; do
+  if [ ! -f "/opt/build/$t" ]; then
+    echo "FATAL: /opt/build/$t missing -- ci/build.sh did not copy the perf/thermals tools" >&2
+    exit 1
+  fi
+done
+
+# --- cpufreq: the 701's Celeron M ULV 353 has NO Enhanced SpeedStep --------------
+# This is a verified finding, not an assumption. The Celeron M (Dothan-core, family 6,
+# model 0x0D) lacks the EST bit in CPUID; the 630 MHz "idle" clock reported by /proc/cpuinfo
+# is a fixed clock-modulation (throttling) state, not a P-state. acpi-cpufreq will probe,
+# find no _PSS objects, and register no policy, so there is nothing to govern. We therefore
+# do NOT install a cpufreq governor unit and we do NOT force 'performance'. If a future
+# stepping does expose cpufreq it will come up with the kernel default (userspace) and
+# userspace can still pick one; we just refuse to pretend we can control it.
+# cpufrequtils is installed only so that /usr/local/bin/eeepc-thermals can *report* the state
+# (cpufreq-info) and so an operator can try it by hand. eeepc-bench records whether a policy
+# exists at all, which is the honest measurement.
+
+# --- ACPI platform profile: prefer passive cooling when the firmware offers it ---------
+# ACPI_PLATFORM_PROFILE (drivers/acpi/platform_profile.c) is present in this kernel and on
+# some 701 BIOSes exposes /sys/firmware/acpi/platform_profile. If it exists we ask for the
+# most power-efficient profile; if the attribute or its 'low-power' choice is absent we do
+# nothing (the shell test guards every write). This is the ONLY firmware cooling knob the
+# 701 reliably gives us on the ACPI side.
+install -m 0755 /opt/build/eeepc-acpi-profile.sh /usr/local/sbin/eeepc-acpi-profile.sh
+cat > /etc/systemd/system/eeepc-acpi-profile.service <<'EOF'
+[Unit]
+Description=Select the firmware low-power ACPI platform profile when available
+After=multi-user.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Nice=19
+IOSchedulingClass=idle
+ExecStart=/usr/local/sbin/eeepc-acpi-profile.sh
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl enable eeepc-acpi-profile.service
+
+# --- SD card: I/O scheduler + no unnecessary read-ahead -------------------------------
+# The 701's only disk is an SD card behind the internal USB reader (sd/mmc). The kernel's
+# default on a 900 MHz i386 build may be mq-deadline or bfq; neither helps when there is no
+# seek cost to optimise. 'none' (noop) removes a scheduling layer on the single core, and a
+# small read_ahead_kb keeps the page cache from reading far ahead on a card whose random
+# latency dwarfs its sequential throughput. Written by a unit (not udev) so it always runs,
+# never races, and needs no udev rules file. Every write is guarded: if the sysfs names
+# differ on a given day nothing fails, we just skip.
+install -m 0755 /opt/build/eeepc-io-tune.sh /usr/local/sbin/eeepc-io-tune.sh
+cat > /etc/systemd/system/eeepc-io-tune.service <<'EOF'
+[Unit]
+Description=Tune SD/USB block devices: no I/O scheduler, modest read-ahead
+After=local-fs.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Nice=19
+IOSchedulingClass=idle
+ExecStart=/usr/local/sbin/eeepc-io-tune.sh
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl enable eeepc-io-tune.service
+
+# --- zram: use lz4 but also verify it is in use; keep the sizing policy ----------------
+# The unit above is unchanged (sized to MemTotal, capped at 1 GiB, lz4). We only add a
+# second-line safety net: if lz4 is not available the kernel falls back, and if the size
+# came out 0 the swap is useless. eeepc-health already flags missing zram; eeepc-bench
+# records the real compressed/uncompressed ratio so the policy can be judged on data.
+
+# --- earlyoom tuning: on a 2 GB machine, act earlier and protect the session -----------
+# A 2 GB 701 running Firefox + Openbox thrashes long before the stock 10% threshold. earlyoom
+# kills the biggest offending process to keep the desktop alive. -m 8 (act at 8% available)
+# and -s 5 (act at 5% free swap) make it step in while the GUI is still usable. The --avoid
+# regex protects the session's own daemons (dbus, systemd, X, the session) so earlyoom cannot
+# take down the desktop it is trying to save, and --prefer targets the usual memory hogs.
+# -r 3600 keeps its own log line to once an hour (it logs to the in-RAM journal).
+# /etc/default/earlyoom is sourced by the unit's EnvironmentFile; it is an upstream feature.
+cat > /etc/default/earlyoom <<'EOF'
+# Eee PC 701: be proactive on a 2 GB RAM machine and never kill the session itself.
+EARLYOOM_ARGS="-r 3600 -m 8 -s 5 --avoid '(^|/)(systemd|dbus-daemon|X|Xorg|lightdm|openbox|pcmanfm|tint2|sshd)$' --prefer '(^|/)(firefox|firefox-esr|Web Content|netsurf)$'"
+EOF
+
 # --- Eee PC platform module (hotkeys, fan) ---
 echo "eeepc-laptop" > /etc/modules-load.d/eeepc.conf
 
@@ -169,6 +299,88 @@ ExecStart=/usr/local/sbin/expand-root.sh
 WantedBy=multi-user.target
 EOF
 systemctl enable expand-root.service
+
+# --- first-boot: give the internal SSD the BOOT path (kernel/initramfs/GRUB) --------
+# The 701's 3.7 GB internal SSD sits idle while the OS runs from the removable card, and
+# it reads ~35 MB/s against the card's ~17 MB/s. This puts the READ-MOSTLY boot path on the
+# fixed disk and leaves the constantly-written root on the card you can replace.
+#
+# It is deliberately NON-DESTRUCTIVE: /boot is COPIED, never moved, and only sda1 is
+# reformatted (the possible ASUS factory recovery partitions sda2/3/4 are left alone). If
+# every SSD step fails, the SD boot path is untouched and the machine still boots as before.
+# An unattended job on a machine its owner cannot reach must never be able to brick it.
+#
+# Runs once, on the first boot of a fresh card. Opt out with:  touch /boot/NO-SSD-BOOT-SETUP
+cat > /usr/local/bin/ssd-boot <<'SSDBOOT'
+#!/bin/bash
+exec /usr/local/sbin/ssd-boot.sh "$@"
+SSDBOOT
+chmod +x /usr/local/bin/ssd-boot
+
+# status: what the SSD boot copy looks like right now
+cat > /usr/local/bin/ssd-boot-status <<'SSDSTATUS'
+#!/bin/bash
+# Report the state of the SSD boot copy without changing anything.
+SSD=${EEEPC_SSD_DEV:-/dev/sda}
+PART=${EEEPC_SSD_PART:-${SSD}1}
+echo "=== SSD boot status ==="
+if [ ! -b "$PART" ]; then echo "  $PART not present."; exit 0; fi
+printf '  device   : %s (%s)\n' "$PART" "$(cat /sys/class/block/$(basename "$SSD")/device/model 2>/dev/null)"
+printf '  label    : %s\n' "$(blkid -s LABEL -o value "$PART" 2>/dev/null || echo none)"
+printf '  uuid     : %s\n' "$(blkid -s UUID  -o value "$PART" 2>/dev/null || echo none)"
+printf '  fs       : %s\n' "$(blkid -s TYPE  -o value "$PART" 2>/dev/null || echo none)"
+if [ "$(blkid -s LABEL -o value "$PART" 2>/dev/null)" != "EEEPCBOOT" ]; then
+  echo "  -> the SSD has NOT been set up for boot (label is not EEEPBOOT)."
+  echo "     run:  sudo ssd-boot"
+  exit 0
+fi
+tmp=$(mktemp -d); trap 'umount "$tmp" 2>/dev/null; rmdir "$tmp"' EXIT
+if mount -o ro "$PART" "$tmp" 2>/dev/null; then
+  echo "  contents : $(ls "$tmp" | tr '\n' ' ')"
+  echo "  grub.cfg : $( [ -f "$tmp/grub/grub.cfg" ] && echo present || echo MISSING )"
+  echo "  rescue   : $( [ -f "$tmp/initrd.img-rescue" ] && echo present || echo MISSING )"
+fi
+echo "  root     : UUID=$(findmnt -n -o UUID / 2>/dev/null) (on $(findmnt -n -o SOURCE / 2>/dev/null))"
+echo "  marker   : $( [ -f /var/lib/eeepc-ssd-boot.done ] && echo "$(head -2 /var/lib/eeepc-ssd-boot.done | tr '\n' ' ')" || echo 'not set up' )"
+echo
+echo "  To boot FROM the SSD: F2 at POST -> Boot -> put the SSD first (or use the Esc menu)."
+echo "  If the SD card is then missing, pick the 'rescue' entry to get a shell."
+SSDSTATUS
+chmod +x /usr/local/bin/ssd-boot-status
+
+cat > /usr/local/sbin/firstboot-ssd-boot.sh <<'EOF'
+#!/bin/bash
+# One-shot first-boot hook. Never fatal: a failure here must not stop the boot.
+[ -f /var/lib/eeepc-ssd-boot.done ] && exit 0
+[ -f /boot/NO-SSD-BOOT-SETUP ] && { echo "ssd-boot: disabled by /boot/NO-SSD-BOOT-SETUP"; exit 0; }
+if [ ! -x /usr/local/sbin/ssd-boot.sh ]; then exit 0; fi
+echo "ssd-boot: first boot -- giving the internal SSD the boot path (see 'ssd-boot-status')"
+/usr/local/sbin/ssd-boot.sh --auto || echo "ssd-boot: did not complete; the SD boot path is unchanged"
+exit 0
+EOF
+chmod +x /usr/local/sbin/firstboot-ssd-boot.sh
+
+# the real implementation ships via /opt/build (ci/build.sh copies it there)
+if [ -f /opt/build/ssd-boot.sh ]; then
+  install -m 0755 /opt/build/ssd-boot.sh /usr/local/sbin/ssd-boot.sh
+else
+  echo "WARN: /opt/build/ssd-boot.sh missing -- SSD boot setup not shipped" >&2
+fi
+cat > /etc/systemd/system/firstboot-ssd-boot.service <<'EOF'
+[Unit]
+Description=First boot: give the internal SSD the boot path (Eee PC 701)
+After=local-fs.target expand-root.service
+Wants=expand-root.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Nice=19
+IOSchedulingClass=idle
+ExecStart=/usr/local/sbin/firstboot-ssd-boot.sh
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl enable firstboot-ssd-boot.service
 
 # --- lightdm autologin into openbox ---
 mkdir -p /etc/lightdm/lightdm.conf.d
@@ -280,6 +492,28 @@ Terminal=false
 Categories=System;Monitor;
 EOF
 
+# --- games / tools / toys installer ------------------------------------------
+# The curated catalogue lives in docs/games-and-software.md; the installer is
+# shipped so a fresh box has a discoverable way to add games (no apt knowledge
+# needed, works offline from a .deb dir, idempotent).  Copy it in, and register
+# a launcher in the panel (see tint2rc below), the Openbox menu (see menu.xml
+# pipe-menu entry) and as a Desktop icon.
+if [ ! -f /opt/build/eeepc-games.sh ]; then
+  echo "WARN: /opt/build/eeepc-games.sh missing -- games installer not shipped" >&2
+else
+  install -m 0755 /opt/build/eeepc-games.sh /usr/local/bin/eeepc-games
+fi
+cat > /usr/local/share/applications/eeepc-games.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Games & software
+Comment=Install curated games, tools & toys (Debian packages; works offline)
+Exec=lxterminal -e /usr/local/bin/eeepc-games
+Icon=applications-games
+Terminal=false
+Categories=Game;Utility;
+EOF
+
 # --- openbox session for sam: panel, applets, keybinds ---
 mkdir -p /home/sam/.config/openbox
 # autostart: give the desktop a background and, crucially, a NO-KEYBIND way to reach a
@@ -327,6 +561,7 @@ launcher_padding = 4 2 4
 launcher_background_id = 0
 launcher_icon_size = 20
 launcher_item_app = /usr/local/share/applications/eeepc-sysinfo.desktop
+launcher_item_app = /usr/local/share/applications/eeepc-games.desktop
 launcher_item_app = /usr/share/applications/lxterminal.desktop
 launcher_item_app = /usr/share/applications/firefox-esr.desktop
 launcher_item_app = /usr/share/applications/pcmanfm.desktop
@@ -384,13 +619,24 @@ cat > /home/sam/.config/openbox/menu.xml <<'EOF'
     <item label="Terminal"><action name="Execute"><execute>lxterminal</execute></action></item>
     <item label="System info (IP address, disk, memory)"><action name="Execute"><execute>lxterminal -e eeepc-sysinfo</execute></action></item>
     <item label="Health check (PASS/FAIL summary)"><action name="Execute"><execute>lxterminal -e /usr/local/bin/eeepc-health-tui</execute></action></item>
+    <item label="Thermals (temps, fan, CPU freq)"><action name="Execute"><execute>lxterminal -e /usr/local/bin/eeepc-thermals-tui</execute></action></item>
+    <item label="Benchmark (quick)"><action name="Execute"><execute>lxterminal -e /usr/local/bin/eeepc-bench-tui</execute></action></item>
+    <item label="SSD boot status (internal SSD)"><action name="Execute"><execute>lxterminal -e /usr/local/bin/ssd-boot-status</execute></action></item>
     <item label="Web browser (Firefox)"><action name="Execute"><execute>firefox-esr</execute></action></item>
     <item label="Light browser (Netsurf)"><action name="Execute"><execute>netsurf</execute></action></item>
     <item label="Files"><action name="Execute"><execute>pcmanfm</execute></action></item>
     <item label="Text editor"><action name="Execute"><execute>mousepad</execute></action></item>
+    <!-- Dynamic submenu: the command prints Openbox pipe-menu XML listing the
+         games/tools that are actually installed, plus a launcher for the
+         installer itself.  So newly installed games appear here with no hand
+         editing of this file. -->
+    <menu id="games-menu" label="Games &amp; software" execute="/usr/local/bin/eeepc-games --openbox-pipe"/>
     <separator/>
     <item label="Network connections"><action name="Execute"><execute>nm-connection-editor</execute></action></item>
     <item label="Volume control"><action name="Execute"><execute>lxterminal -e alsamixer</execute></action></item>
+    <separator/>
+    <item label="Battery recalibration (drain+charge)"><action name="Execute"><execute>lxterminal -e "sudo battery-rejuv full"</execute></action></item>
+    <item label="Battery status"><action name="Execute"><execute>lxterminal -e "battery-rejuv status; read -p 'press Enter '"</execute></action></item>
     <separator/>
     <item label="Lock screen"><action name="Execute"><execute>lxlock</execute></action></item>
     <item label="Reboot"><action name="Execute"><execute>systemctl reboot</execute></action></item>
@@ -417,6 +663,8 @@ cat > /home/sam/.config/openbox/rc.xml <<'EOF'
     <keybind key="C-A-x"><action name="Execute"><execute>lxterminal</execute></action></keybind>
     <keybind key="C-A-h"><action name="Execute"><execute>lxterminal -e /usr/local/bin/eeepc-health-tui</execute></action></keybind>
     <keybind key="C-A-s"><action name="Execute"><execute>lxterminal -e eeepc-sysinfo</execute></action></keybind>
+    <keybind key="C-A-e"><action name="Execute"><execute>lxterminal -e /usr/local/bin/eeepc-thermals-tui</execute></action></keybind>
+    <keybind key="C-A-b"><action name="Execute"><execute>lxterminal -e /usr/local/bin/eeepc-bench-tui</execute></action></keybind>
     <!-- no Super key on the 701: fallback binds for an external keyboard only -->
     <keybind key="W-Return"><action name="Execute"><execute>lxterminal</execute></action></keybind>
     <keybind key="W-F"><action name="Execute"><execute>firefox-esr</execute></action></keybind>
@@ -471,6 +719,17 @@ Exec=lxterminal -e eeepc-sysinfo
 Icon=utilities-system-monitor
 Terminal=false
 Categories=System;Monitor;
+EOF
+cat > /home/sam/Desktop/eeepc-games.desktop <<'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Games & software
+Comment=Curated games, tools and toys for the Eee PC 701
+Exec=lxterminal -e /usr/local/bin/eeepc-games
+Icon=applications-games
+Terminal=false
+Categories=Game;Utility;
 EOF
 chmod 0755 /home/sam/Desktop/*.desktop
 
@@ -702,6 +961,36 @@ read -r -p "Press Enter to close this window... "
 TUI
 chmod +x /usr/local/bin/eeepc-health-tui
 
+# --- thermals / fan / CPU-state reporter: eeepc-thermals -----------------------------
+# Installed from /opt/build/eeepc-thermals.sh. It is READ-ONLY by design: the 701's fan is an
+# Embedded-Controller curve exposed via the `eeepc` hwmon (pwm1/pwm1_enable/fan1_input), and
+# `cpufv` is force-disabled by the driver on model "701". Neither is written for the user.
+# See the script header for the full interface note and docs/performance-thermals.md §1.
+install -m 0755 /opt/build/eeepc-thermals.sh /usr/local/bin/eeepc-thermals
+
+# --- benchmark: eeepc-bench -----------------------------------------------------------
+# Installed from /opt/build/eeepc-bench.sh. Records boot/CPU/memory/SD-IO/X11 latency to
+# /var/log/eeepc-bench-<date>.txt. --quick skips the only SD-write step. See its header.
+install -m 0755 /opt/build/eeepc-bench.sh /usr/local/bin/eeepc-bench
+
+# terminal wrappers so the Openbox menu can keep the output on screen (menu items must
+# not vanish when the command exits). Same pattern as eeepc-health-tui.
+cat > /usr/local/bin/eeepc-thermals-tui <<'TUI'
+#!/bin/bash
+/usr/local/bin/eeepc-thermals "$@"
+echo
+read -r -p "Press Enter to close this window... "
+TUI
+chmod 0755 /usr/local/bin/eeepc-thermals-tui
+cat > /usr/local/bin/eeepc-bench-tui <<'TUI'
+#!/bin/bash
+# --quick by default from the menu: no SD write test on a casual click.
+/usr/local/bin/eeepc-bench --quick "$@"
+echo
+read -r -p "Press Enter to close this window... "
+TUI
+chmod 0755 /usr/local/bin/eeepc-bench-tui
+
 # --- PATH so rfkill / iw / swapon / ss resolve for sam ------------------------
 # sam's login PATH is /usr/local/bin:/usr/bin:/bin:/usr/games -- /usr/sbin is absent,
 # so `rfkill` fails ("command not found") even though /usr/sbin/rfkill exists.
@@ -813,6 +1102,28 @@ EOF
 chown sam:sam /home/sam/.config/pcmanfm/default/desktop-items-0.conf
 chmod 0644 /home/sam/.config/pcmanfm/default/desktop-items-0.conf
 
+# --- ship the battery conditioning / fuel-gauge recalibration tool ----------
+# The aged 701 pack's BMS fuel gauge drifts, so "100%" and the runtime estimate lie. A single
+# full discharge -> full recharge re-learns the real endpoints. Installed as battery-rejuv
+# (also reachable from the Openbox menu). The companion unit lets you run it detached from a
+# terminal via systemd-run/start so a dropped SSH session doesn't kill a multi-hour cycle.
+if [ -f /opt/build/battery-rejuv.sh ]; then
+  install -m 0755 /opt/build/battery-rejuv.sh /usr/local/sbin/battery-rejuv
+  ln -sf /usr/local/sbin/battery-rejuv /usr/local/bin/battery-rejuv
+  cat > /etc/systemd/system/battery-rejuv.service <<'EOF'
+[Unit]
+Description=Battery conditioning / fuel-gauge recalibration (Eee PC 701)
+Documentation=man:systemd-inhibit(1)
+# Deliberately NOT enabled: run on demand with  systemctl start battery-rejuv
+[Service]
+Type=oneshot
+RemainAfterExit=no
+TimeoutStartSec=infinity
+# root needed for systemd-inhibit + backlight writes
+ExecStart=/usr/local/sbin/battery-rejuv full --yes
+EOF
+fi
+
 # --- MOTD with quick reference ---
 # NOTE: Debian's sshd runs with UsePAM no, so sshd does NOT print /etc/motd, and an
 # Openbox session shows no MOTD either. /etc/profile.d/00-eeepc-motd.sh above prints
@@ -828,10 +1139,21 @@ cat > /etc/motd <<'EOF'
   Network:  ip -4 addr      — wifi: click the nm-applet icon in the panel
   Health:   Ctrl+Alt+S, or the "System info" icon — IP, disk, memory, route
             eeepc-health    — one-shot PASS/FAIL check of the whole machine
+  Perf:     eeepc-thermals  — temps, fan state, CPU freq, governor (--watch 5)
+            eeepc-bench --quick --label "before"  — benchmarks boot/CPU/disk/X11
+            (writes /var/log/eeepc-bench-<date>.txt; --quick skips the SD write test)
   Support:  sudo deeebian-report.sh --note "describe the problem"
             — writes a diagnostics tarball and tries to send it to Hermes
-  Panel has launcher icons too (Terminal / System info / Firefox / Files).
-  Runs from SD; swap is zram (RAM-backed, no card wear). Prefer a <=32 GB SDHC.
+  Panel has launcher icons too (Terminal / System info / Games / Firefox / Files).
+  Battery: `battery-rejuv status` to read the pack; `sudo battery-rejuv full` to
+           recalibrate the fuel gauge (full drain, then full charge — a few hours).
+  Games:    already installed: nethack, crawl, angband, sgt-puzzles, chocolate-doom,
+            freedoom, dosbox, ace-of-penguins, cowsay, figlet, cmatrix, nyancat, bb,
+            fortune, xscreensaver and ~70 more. Right-click desktop > "Games & software"
+            to browse/add the bigger titles (scummvm, openttd, supertux...).
+  SSD:      ssd-boot-status — is the internal SSD carrying the boot path?
+            sudo ssd-boot   — (re)copy kernel+initramfs+GRUB onto the SSD
+  Runs from SD; swap is zram (RAM-backed, no card wear). 16 GB+ recommended.
 
 EOF
 

@@ -49,6 +49,7 @@ apt-get install -y \
   curl wget rsync tmux htop ncdu less file nano pciutils usbutils \
   alsa-utils volumeicon-alsa \
   earlyoom tlp \
+  cpufrequtils hdparm \
   cloud-guest-utils e2fsprogs dosfstools ntfs-3g exfatprogs \
   xserver-xorg-core xserver-xorg xserver-xorg-video-intel \
   xserver-xorg-video-fbdev xserver-xorg-video-vesa xserver-xorg-input-libinput \
@@ -65,6 +66,43 @@ apt-get install -y \
 apt-get install -y --no-install-recommends \
   build-essential gcc make binutils libc6-dev \
   bison flex libelf-dev libssl-dev libncurses-dev bc dwarves kmod cpio
+
+# --- games, tools, toys: the fun that makes a netbook worth picking up ---------
+# Shipped IN the image (not merely offered by eeepc-games) so a fresh card boots
+# to a machine with something to do. ~82 packages / ~170 MiB installed, verified
+# against the real bookworm i386 index. All are text-mode or light 2D, which is
+# what this 900 MHz / 800x480 / no-3D box actually runs well.
+#
+# The larger, more demanding titles (scummvm + the freeware adventures, openttd,
+# supertux, gnugo, cataclysm-dda) are deliberately NOT shipped: eeepc-games offers
+# them and the catalogue documents them. Every package here is in Debian main, so
+# nothing proprietary is redistributed by this repo.
+#
+# NOTE: do not put `#` "comments" inside a backslash-continued command -- the shell
+# runs them as subshells. Each group is its own install call for that reason.
+
+# roguelikes + dungeon crawls (the strongest category on this hardware)
+apt-get install -y nethack-console nethack-common crawl moria slashem angband \
+  boohu omega-rpg gearhead meritous hyperrogue
+# interactive fiction interpreters (huge free corpus at the IF Archive)
+apt-get install -y frotz glulxe jzip scottfree open-adventure dmagnetic
+# card, board and abstract strategy
+apt-get install -y ace-of-penguins gnubg gnuchess xboard fairymax pente grhino \
+  xshogi gtkboard tty-solitaire xmahjongg
+# puzzles and logic
+apt-get install -y sgt-puzzles 2048 tetzle tworld xdemineur black-box colorcode \
+  pipewalker hexalate berusky sudoku nudoku xye zaz wizznic xbubble enigma
+# terminal arcade
+apt-get install -y vitetris petris tint bastet ninvaders pacman4console nsnake \
+  greed moon-buggy asciijump
+# classic FPS via GPL source ports; Freedoom is the freely-redistributable data set
+apt-get install -y chocolate-doom prboom-plus freedoom dosbox
+# toys, demos and time-wasters
+apt-get install -y cowsay figlet toilet fortune-mod fortunes-debian-hints cmatrix \
+  sl lolcat nyancat bb xscreensaver xscreensaver-data asciinema sox schism \
+  milkytracker pt2-clone espeak libaa-bin rig bsdgames tty-clock
+# artwork / themes / icons, so the desktop is not a grey void
+apt-get install -y desktop-base
 
 echo "=== packages done ==="
 apt-get clean

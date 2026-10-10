@@ -1,0 +1,75 @@
+=== eeepc-bench — eeepc701 — 2026-10-09 06:57:01 UTC ===
+label            : before
+kernel           : Linux 6.12.112-eeepc  (i686)
+uptime           : 2424 s
+cpu              : Intel(R) Celeron(R) M processor          900MHz
+cores            : 1
+bogomips         : 1260.13
+memtotal         : 1998 MB
+quick mode       : 0 (1 = no SD write test, no terminal-launch test)
+------------------------------------------------------------
+## BOOT
+  Startup finished in 8.399s (kernel) + 1min 10.671s (userspace) = 1min 19.070s 
+  graphical.target reached after 1min 9.473s in userspace.
+  -- top offenders (blame) --
+  51.114s ssh.service
+  19.699s expand-root.service
+  15.077s dev-sdb1.device
+   4.633s systemd-timesyncd.service
+   4.026s udisks2.service
+   2.907s e2scrub_reap.service
+   2.760s user@1000.service
+   2.484s ModemManager.service
+   2.480s NetworkManager.service
+   2.468s avahi-daemon.service
+   2.225s systemd-journald.service
+   2.125s keyboard-setup.service
+------------------------------------------------------------
+## CPU
+  gzip 8MiB      : 5176 ms  (1.5 MB/s)
+  sha256 8MiB    : 897 ms  (8.9 MB/s)
+  awk int loop   : 4056 ms  (0.74 Miter/s)
+------------------------------------------------------------
+## MEMORY
+  MemTotal:        1997.9 MB
+  MemFree:           58.1 MB
+  MemAvailable:    1832.8 MB
+  Buffers:            1.3 MB
+  Cached:          1828.6 MB
+  SwapTotal:       1024.0 MB
+  SwapFree:         977.5 MB
+  Dirty:              0.0 MB
+  -- swap --
+  Filename				Type		Size		Used		Priority
+  /dev/zram0                              partition	1048572		47616		100
+  zram0          : orig 43 MB -> compr 15 MB  (ratio 2.85:1, mem 17 MB)
+  zram algo      : [lzo-rle] lzo 
+------------------------------------------------------------
+## DISK (SD card)
+  root device    : /dev/sdb1
+  root options   : rw,noatime,commit=60
+  scheduler      : none [mq-deadline] kyber 
+  read_ahead_kb  : 128
+  
+  /dev/sdb:
+   Timing buffered disk reads:  44 MB in  3.13 seconds =  14.08 MB/sec
+  -- sequential write (32 MiB, then removed) --
+  write          : 2767 ms  (11.56 MB/s)
+  seq read       : 3403 ms  (9.40 MB/s)
+  4k rand read   : 64 ops in 1042 ms  (61.4 IOPS, 16.28 ms/op)
+------------------------------------------------------------
+## X11 / DESKTOP
+  display        : :0
+  X round-trip   : 50 reqs in 1379 ms  (27.58 ms/request)
+  X clients      : 0
+  lxterminal open: 1591 ms
+  xmessage map   : 250 ms (includes 1 s on-screen timeout)
+------------------------------------------------------------
+## GOVERNOR / THERMAL
+  cpufreq        : ABSENT (no Enhanced SpeedStep on this CPU — expected)
+  thermal_zone0: type=acpitz temp=55000
+  fan: rpm=1450 pwm1=102 pwm1_enable=2
+------------------------------------------------------------
+=== eeepc-bench complete — saved to /var/log/eeepc-bench-20261009-065701.txt ===
+Compare runs with:  diff <(sed 's/[0-9]\+ ms/N ms/g' /var/log/eeepc-bench-BEFORE.txt) \
+                          <(sed 's/[0-9]\+ ms/N ms/g' /var/log/eeepc-bench-AFTER.txt)

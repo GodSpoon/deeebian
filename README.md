@@ -16,14 +16,19 @@ swap, so the card is never written for paging — fast and gentle on the card.
 
 ---
 
+> **Current state / picking this up in a new session:** read
+> [`docs/HANDOFF-2026-10-09.md`](docs/HANDOFF-2026-10-09.md) first. It records what is verified
+> on hardware, what is not, the known gotchas, and the one open problem.
+
 ## Put it on an SD card
 
-> **Card note: 32 GB SDHC is the safe choice.** Some Eee PC 701 units are reported not to
-> recognise SDXC cards (>32 GB) in the internal reader, though this is card- and unit-dependent
-> rather than a hard limit — any SDXC-capable host should read SD/SDHC, so a large card may well
-> work. If a big card isn't seen by the BIOS, try an SDHC card. Known 701 reader quirks are the
-> "high voltage" mode some cards need and the BIOS `OS Installation` setting if you hit write
-> errors. A 32 GB SDHC is the known-good default.
+> **Card note: SDXC works.** This was originally believed to be an SD/SDHC-only reader and the
+> docs said to stay at <=32 GB. That is **wrong**: this image has been booted on real hardware
+> from a **128 GB SDXC** card in the 701's own internal reader, and the kernel enumerates it as a
+> plain USB mass-storage device with no capacity limit (`244277248` 512-byte sectors ≈ 116 GiB).
+> Use any card you have; 16 GB or more is comfortable, and the first boot grows the root
+> filesystem to fill whatever you insert. (If a particular card is *not* seen by the BIOS, that is
+> a card/media quirk, not a capacity limit — try another card.)
 
 Get the image from the [Releases page](../../releases), then write it to the card.
 
@@ -74,8 +79,11 @@ for the one-time boot menu and pick the card. First boot grows the root filesyst
 | Browser | **Super+F** (Firefox ESR; Netsurf installed for light pages) |
 | Wifi | click the **nm-applet** icon in the panel |
 | Report a problem | `sudo deeebian-report.sh --note "what is wrong"` — writes a diagnostics tarball |
+| Games & toys | `eeepc-games` — install curated games/tools/toys (menu); see [`docs/games-and-software.md`](docs/games-and-software.md) |
 | SSH | `ssh sam@eeepc701.local` |
 | Update | `sudo apt update && sudo apt upgrade` |
+| Battery status | `battery-rejuv status` |
+| Recalibrate battery | `sudo battery-rejuv full` (or menu → Battery recalibration) |
 
 ## Why it stays light
 
@@ -83,11 +91,40 @@ for the one-time boot menu and pick the card. First boot grows the root filesyst
 |---|---|---|
 | RAM | zram swap 1 GB lz4, `swappiness=150`, `earlyoom`, **no disk swap** | Paging happens in RAM; the SD card is never written for memory pressure — faster, and no card wear |
 | Power | `tlp`, `wifi.powersave=2` (ath5k stability), acpid, capped journald | Longest battery on the original cells |
+| Battery gauge | `battery-rejuv` (on-device tool) | One full drain→recharge re-teaches the BMS the pack's real endpoints |
 | Card life | ext4 `noatime,commit=60`, /tmp on tmpfs, doc-files stripped, 30 MB journal | Fewer small random writes |
 | Boot | all 701 drivers built into the kernel | Boots even if the initramfs is ever damaged |
 
 Measured on the shipped image in a 2 GB VM: **~155 MB RAM at the console, ~250-350 MB at the desktop**.
 Firefox ESR 128 runs but is slow — this is a 900 MHz 2007 CPU; Netsurf is the pleasant path.
+
+## Battery care
+
+The 701's pack is **2×18650 Li-ion in series (7.4 V nominal, ~4400 mAh)** behind a BMS. An aged or
+long-idle pack's *fuel gauge* (the BMS coulomb counter) drifts, so it reports a wrong "100%" and a
+wrong runtime. One **full discharge → full recharge** makes the gauge re-learn the real endpoints.
+This does **not** repair worn cells — it resynchronises the gauge. Expect the reported full
+capacity to *drop* afterwards if the gauge had been optimistic; that is the point.
+
+The tool is installed as **`battery-rejuv`** (source: `scripts/battery-rejuv.sh`):
+
+```bash
+battery-rejuv status     # live telemetry (volts, %, state), changes nothing
+sudo battery-rejuv full  # drain to the floor, then prompt to charge to a true 100% + top-off
+sudo battery-rejuv drain # just the discharge (do it on battery, unplugged)
+sudo battery-rejuv charge# just monitor a recharge to 100%
+sudo battery-rejuv restore # undo the "keep awake" settings if a run died
+```
+
+It also appears in the Openbox menu (**Battery recalibration**). Safety rails: the drain stops at
+`BATTERY_FLOOR_PCT` (default 6%) **or** `BATTERY_FLOOR_UV` (default 6.6 V = 3.3 V/cell), whichever
+comes first; the firmware hard-cut is the last line of defence, never the plan. A `systemd-inhibit`
+lock (`idle:sleep:handle-lid-switch`) keeps the machine awake and off idle-suspend for the whole
+run, and all logging goes to `/run` (tmpfs) so a multi-hour cycle writes nothing to the SD card.
+
+For a hands-off run detached from your terminal: `sudo systemctl start battery-rejuv`
+(oneshot unit, not enabled at boot). Regression test: `sudo scripts/test-battery-rejuv.sh`
+exercises the drain/charge state machines against a fake `power_supply` tree.
 
 ## Hardware support
 
@@ -98,7 +135,7 @@ Firefox ESR 128 runs but is slow — this is a 900 MHz 2007 CPU; Netsurf is the 
 | Atheros AR5007EG wifi | ath5k (built-in, no blob) | works |
 | Attansic/Atheros L2 ethernet | atl2 (built-in) | works |
 | Realtek ALC662 audio | snd-hda-intel, auto-unmute on boot | works |
-| Internal SD reader | usb-storage (built-in) | bootable from BIOS, **≤32 GB SDHC only** |
+| Internal SD reader | usb-storage (built-in) | bootable from BIOS; **SD, SDHC and SDXC all verified** (128 GB SDXC boots) |
 | Webcam | uvcvideo (built-in) | works |
 | Fn keys / fan | eeepc-laptop | loaded at boot |
 
@@ -167,7 +204,7 @@ debug harnesses used to verify the boot path.
 scripts/     build pipeline (see table above)
 ci/build.sh  one-shot end-to-end builder (used by CI and locally)
 .github/     Actions workflow
-docs/        build report page (index.html + report.html)
+docs/        build report page (index.html + report.html); games-and-software.md = the curated catalogue
 testshots/   VM screendumps from verification
 ```
 
